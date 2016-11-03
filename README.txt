@@ -60,3 +60,31 @@ Flags:
 
 CRC32 Checksum:
    -  32-bit checksum that is calculated using a Cyclic Redundancy Check, specifically CRC32. This field is used to make sure that a packet is delivered uncorrupted.
+
+
+
+API Description
+
+crpSocket( [ IPv6=false ] ):
+   -  This method is the basic constructor for a socket that utilizes the CRP protocol. The IPv6 variable is an optional Boolean that specifies what version of IP we would like to use for this socket. The default constructor with no supplied value will utilize IPv4, and will expect only an IPv4 address. If the IPv6 flag is specified, then the CRP socket will later expect a IPv6 address. This constructor returns a new CRP socket.
+
+bind( address ):
+   -  This method is meant for binding a CRP socket to a specific address. The address that is provided to the bind() function is a 2-tuple consisting of a host IP address, as well as a port number. The supplied host address should match the specified IP version given in the constructor. This means that if IPv6 is specified in the constructor for a CRP socket, an IPv6 address should be provided. Should an empty string be provided for the host value in the 2-tuple, the socket will be open to all incoming connections.
+
+listen():
+   -  The listen() method opens the socket to connections and allows the socket to openly accept newly requested connections.
+
+accept():
+   -  The accept() method should only be called once a socket has called bind() and initiated the listen() method. If these criteria are met, the accept() method will allow the socket to accept an incoming connection. If a new connection is accepted, this method will return a 2-tuple consisting of a new socket that is ready to be used for sending and receiving data, as well as the address information of the incoming connection.
+
+connect( address ):
+   -  Connects the existing CRP socket to a remote address specified in the address parameter. Address is a 2-tuple consisting of a host IP as well as a port number. Calling this method will also initiate the 3-way handshake process in order to establish a connection with the remote server. This involves first sending a CRP packet with the CON flag set within the header to indicate that a new connection is being requested, as well as establishing a sequence number for the new stream.
+
+close():
+   -  Closes the current connection and triggers the shutdown of the socket. This will trigger the closing phase of the connection, where we must indicate to the server that we are closing the connection by sending a CRP packet with the END flag set. Depending on the state of the client and server sockets, different methods of closing the connection gracefully must occur.
+
+sendData( data ):
+   -  This method will send data to the connected socket, meaning the socket must have successfully connected to a remote socket before sendData() can be executed. This method will send the entirety of the data provided to the method, or will raise an exception if an error in transmission occurs.
+
+recvData( buff ):
+   -  This method will wait to receive new data from the connected socket, meaning the socket must have successfully connected to a remote socket before recvData() can be executed. The parameter buff specifies the maximum number of bytes that the socket should receive at one time. Upon successful completion, recvData() will return a new buffer containing all of the received data.
