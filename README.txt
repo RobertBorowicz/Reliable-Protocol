@@ -88,3 +88,19 @@ sendData( data ):
 
 recvData( buff ):
    -  This method will wait to receive new data from the connected socket, meaning the socket must have successfully connected to a remote socket before recvData() can be executed. The parameter buff specifies the maximum number of bytes that the socket should receive at one time. Upon successful completion, recvData() will return a new buffer containing all of the received data.
+
+Algorithms
+
+Adler-32 Checksum:
+   -  The Adler-32 checksum is a 32-bit checksum that is used to verify the integrity of the data within the CRP packet. The Adler-32 algorithm was chosen because it has almost the same reliability as the robust CRC-32 algorithm, while reducing the run time significantly. The reliability for speed tradeoff is acceptable since we want to process and deliver CRP packets as quickly as possible, while still having an acceptable reliability for error detection.
+   -  The basic algorithm for the Adler-32 checksum is described and written in pseudocode below:
+   -  Adler-32 calculates a 32-bit checksum by first calculating two 16-bit values that are concatenated together. Our two 16-bit values can be referred to as A and B, and they are initialized as 1 and 0 respectively. To calculate the values, we loop over each 8-bit byte within our data. In each iteration of the loop, we update A by adding the value of the byte of data to itself modulo 65521, which is the largest prime number less than 232. Our B value is then updated by adding our newly calculated A value to itself module 65521. Our values are updated for every byte of data, and the final 32-bit output is B left-shifted by 16 bits, concatenated with A.
+   -  A very simple pseudocode example of this algorithm can be seen below. This algorithm has been optimized more than the below code, and is included in the open source zlib library.
+
+PRIME = 65521
+A = 1
+B = 0
+for (i=0; i<length(data); i++)
+   A = (A + data[i]) mod PRIME
+   B = (B + A) mod PRIME
+return (B << 16) | A
