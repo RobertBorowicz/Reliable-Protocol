@@ -3,7 +3,7 @@ import sys
 from enum import Enum
 import zlib
 
-class CRPStatus(Enum):
+class CRPState(Enum):
 	CLOSED = 0
 	LISTEN = 1
 	CON_SENT = 2
@@ -19,11 +19,15 @@ class CRPStatus(Enum):
 class CRPSocket():
 
 	MAX_CRP_PACKET_SIZE = 1024
+	CRP_WINDOW_SIZE = 1
+	CRP_MAX_SEQ_NUM = 65535
+	CRP_MAX_ACK_NUM = 65535
+	CRP_HEADER_LENGTH = 128
 
 	def __init__(self, ipv6=False):
 
 		self.mainSocket = None
-		self.status = CRPStatus.CLOSED
+		self.state = CRPState.CLOSED
 
 		try:
 			if ipv6:
@@ -74,5 +78,16 @@ class CRPSocket():
 		# TODO
 		pass
 
+	def __parseHeader(header):
+		# TODO
+		pass
+
 	def __generateChecksum(data):
 		return zlib.adler32(data)
+
+	def __validateChecksum(checksum, data):
+
+		if checksum != self.__generateChecksum(data):
+			return False
+
+		return True
