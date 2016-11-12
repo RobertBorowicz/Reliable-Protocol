@@ -1,9 +1,8 @@
 import socket
 import sys
-from enum import Enum
 import zlib
 
-class CRPState(Enum):
+class CRPState:
 	CLOSED = 0
 	LISTEN = 1
 	CON_SENT = 2
@@ -15,6 +14,14 @@ class CRPState(Enum):
 	CLOSE_WAIT = 8
 	END_ACK = 9
 	TIMEOUT = 10
+
+class CRPFlag:
+	END_FLAG = 0x1  #000001
+	CON_FLAG = 0x2  #000010
+	DTA_FLAG = 0x4  #000100
+	WIN_FLAG = 0x8  #001000
+	RST_FLAG = 0x10 #010000
+	ACK_FLAG = 0x20 #100000
 
 class CRPSocket():
 
@@ -43,51 +50,94 @@ class CRPSocket():
 	def bind(self, address):
 		try:
 			self.mainSocket.bind(address)
-		except socket.error
+		except socket.error:
 			print "Unable to bind to address: %s" % address
 
-	def listen():
+	def listen(self):
 		# TODO
 		pass
 
-	def accept():
+	def accept(self):
 		# TODO
 		pass
 
-	def connect(address):
+	def connect(self, address):
 		# TODO
 		pass
 
-	def close():
+	def close(self):
 		# TODO
 		pass
 
-	def sendData(data):
+	def sendData(self, data):
 		# TODO
 		pass
 
-	def recvData(buff):
+	def recvData(self, buff):
 		# TODO
 		pass
 
-	def __packetizeData(data):
+	def __packetizeData(self, data):
+		"""Split the input data into CRP sized packets
+		This ensures that packets are of maximum size 1024
+		Any trailing segment that is less than 1024 bytes will
+		be retained at its original length
+		Returned as a list of data segments
+		"""
+		segments = []
+		base = 0
+
+		while (base < len(data)):
+			segment = data[base:base+self.MAX_CRP_PACKET_SIZE]
+			segments.append(segment)
+			base += self.MAX_CRP_PACKET_SIZE
+
+		return segments
+
+
+	def __generateHeader(self):
 		# TODO
 		pass
 
-	def __generateHeader():
+	def __parseHeader(self, header):
 		# TODO
 		pass
 
-	def __parseHeader(header):
-		# TODO
-		pass
+	def __parseFlags(self, flags):
+		setFlags = []
 
-	def __generateChecksum(data):
+		if CRPFlag.END_FLAG & flags:
+			setFlags.append(CRPFlag.END_FLAG)
+		if CRPFlag.CON_FLAG & flags:
+			setFlags.append(CRPFlag.CON_FLAG)
+		if CRPFlag.DTA_FLAG & flags:
+			setFlags.append(CRPFlag.DTA_FLAG)
+		if CRPFlag.WIN_FLAG & flags:
+			setFlags.append(CRPFlag.WIN_FLAG)
+		if CRPFlag.RST_FLAG & flags:
+			setFlags.append(CRPFlag.RST_FLAG)
+		if CRPFlag.ACK_FLAG & flags:
+			setFlags.append(CRPFlag.ACK_FLAG)
+
+		return setFlags
+
+	def __generateChecksum(self, data):
 		return zlib.adler32(data)
 
-	def __validateChecksum(checksum, data):
-
+	def __validateChecksum(self, checksum, data):
 		if checksum != self.__generateChecksum(data):
 			return False
-
 		return True
+
+"""crp = CRPSocket()
+total = 0
+with open("R:\Documents\Fall 2016\CS 3251\Written_3\Ladder.png", "rb") as f:
+	while True:
+		data = f.read(4096)
+		if data:
+			packets = crp.packetizeData(data)
+			p = len(packets)
+			total += p
+			print p, total
+		else:
+			break"""
