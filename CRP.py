@@ -1,6 +1,7 @@
 import socket
 import sys
 import zlib
+from struct import *
 
 class CRPState:
 	CLOSED = 0
@@ -29,7 +30,7 @@ class CRPSocket():
 	CRP_WINDOW_SIZE = 1
 	CRP_MAX_SEQ_NUM = 65535
 	CRP_MAX_ACK_NUM = 65535
-	CRP_HEADER_LENGTH = 128
+	CRP_HEADER_LENGTH = 12 #length in bytes
 
 	def __init__(self, ipv6=False):
 
@@ -94,14 +95,61 @@ class CRPSocket():
 
 		return segments
 
+	def __handlePacket(self, packet):
+		header = packet[:12]
+		headerInfo, packedHeader = self.__parseHeader
 
-	def __generateHeader(self):
-		# TODO
-		pass
+		data = None
+		if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
+			data = packet[12:]
+
+
+	def __generateHeader(self, seq, ack, win, flags):
+		"""
+		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		|        Sequence Number        |     Acknowledgment Number     |
+		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		|                               |    |   Data   |    |A|W|D|C|E||
+		|         Window Length         |x000|  Offset  |x000|C|I|T|O|N||
+		|                               |    |          |    |K|N|A|N|D||
+		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		|                           Checksum                            |
+		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		Generates the header without the checksum. The checksum is calculated later
+		"""
+		# Combine offset and flags into 16-bit chunk for packing purposes
+		try:
+			header = pack("<HHHh", seq, ack, win, flags)
+			return header
+		except:
+			return None
+
+	def __packPacket(self, header, payload):
+		if payload:
+			checksum = self.generateChecksum(header+payload)
+			fullHeader = pack("<qi", header, checksum)
+			fullPacket = fullHeader + payload
+			return fullPacket
+		else:
+			checksum = self.generateChecksum(header)
+			fullHeader = pack("<qi", header, checksum)
+			return fullHeader
 
 	def __parseHeader(self, header):
-		# TODO
-		pass
+		headerInfo = {}
+
+		if len(header) != self.CRP_HEADER_LENGTH:
+			return None
+
+		seq, ack, win, flags, checksum = unpack("<HHHhi", header)
+		headerInfo["SEQ"] = seq & 0xffff
+		headerInfo["ACK"] = ack & 0xffff
+		headerInfo["WIN"] = win & 0xffff
+		headerInfo["FLG"] = self.__parseFlags(flags & 0xff)
+		headerInfo["CHK"] = checksum
+		packedHeader = pack("HHHh", seq, ack, win, flags)
+
+		return headerInfo, packedHeader
 
 	def __parseFlags(self, flags):
 		setFlags = []
@@ -121,8 +169,10 @@ class CRPSocket():
 
 		return setFlags
 
-	def __generateChecksum(self, data):
-		return zlib.adler32(data)
+	def __generateChecksum(self, data, value=None):
+		if not value:
+			return zlib.adler32(data)
+		return zlib.adler32(data, value)
 
 	def __validateChecksum(self, checksum, data):
 		if checksum != self.__generateChecksum(data):
@@ -141,3 +191,22 @@ with open("R:\Documents\Fall 2016\CS 3251\Written_3\Ladder.png", "rb") as f:
 			print p, total
 		else:
 			break"""
+
+"""crp = CRPSocket()
+seq = 3500
+ack = 4500
+win = 5
+flags = 0x32
+packed = pack("<hhhh", seq, ack, win, flags)
+csum = zlib.adler32(packed)
+print csum
+print packed
+string = "This packet now has a data payload"
+s = packed + string
+csum = zlib.adler32(string)
+print csum
+q, = unpack("q", packed)
+print len(packed)
+p = pack("<qi", q, csum)
+print len(p)
+print unpack("<hhhh", packed[0:8])"""
