@@ -53,6 +53,7 @@ class CRPSocket():
 		self.state = CRPState.CLOSED
 		self.useIPv6 = ipv6
 		self.clientAddr = 'localhost'
+		self.nextPort = 5000
 
 		self.seqNum = 0
 		self.ackNum = 0
@@ -65,8 +66,8 @@ class CRPSocket():
 			else:
 				self.mainSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 			print "Made Socket"
-			#self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		except socket.error:
+			self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+		except socket.error as err:
 			print "Unable to establish a new CRP socket"
 			sys.exit()
 		print "Done"
@@ -74,8 +75,10 @@ class CRPSocket():
 	def bind(self, address):
 		try:
 			self.mainSocket.bind(address)
+			self.nextPort = (address[1] + 1) % 65535
 		except socket.error:
-			print "Unable to bind to address: %s" % address
+			print err
+			print "Unable to bind to address: %s %s" % address
 
 	def listen(self):
 		self.state = CRPState.LISTEN
@@ -106,31 +109,31 @@ class CRPSocket():
 				conn.state = CRPState.CON_RECEIVED
 				conn.winSize = headerInfo["WIN"]
 				conn.clientAddr = addr
+				conn.bind((addr[0], self.nextPort))
+				self.nextPort = (self.nextPort + 1) % 65535
 
 				connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
 				conackHeader = conn.__generateHeader(connFlags)
 				CONACK = conn.__packPacket(conackHeader)
 
 				attempts = self.CRP_MAX_ATTEMPTS
-				self.mainSocket.settimeout(self.CRP_TIMEOUT)
+				conn.mainSocket.settimeout(self.CRP_TIMEOUT)
 				while (attempts > 0):
 					try:
-						self.mainSocket.sendto(CONACK, conn.clientAddr)
+						conn.mainSocket.sendto(CONACK, conn.clientAddr)
 
-						response, respAddr = self.mainSocket.recvfrom(1024)
+						response, respAddr = conn.mainSocket.recvfrom(1024)
 						if respAddr != conn.clientAddr:
 							# Drop packets that aren't part of this connection esatblishment
 							continue
 						try:
-							respInfo, data = self.__parsePacket(response)
+							respInfo, data = conn.__parsePacket(response)
 							respFlags = respInfo["FLG"]
 							if CRPFlag.ACK_FLAG in respFlags:
 								conn.seqNum += 1
 								if (respInfo["ACK"] == conn.seqNum) and (respInfo["SEQ"] == conn.ackNum):
 									conn.state = CRPState.CONNECTED
 									print "CONNECTED"
-									conn.bind((conn.clientAddr[0], 5001))
-									print conn.mainSocket.getsockname()
 									return conn, conn.clientAddr
 
 						except ChecksumError:
@@ -170,6 +173,7 @@ class CRPSocket():
 				if (CRPFlag.CON_FLAG in respFlags) and (CRPFlag.ACK_FLAG in respFlags):
 					self.__incrementSequence(1)
 					if self.seqNum == respHeader["ACK"]:
+						self.clientAddr = respAddr
 						self.ackNum = (respHeader["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
 						self.state = CRPState.CONNECTED
 						ackHeader = self.__generateHeader(CRPFlag.ACK_FLAG)
