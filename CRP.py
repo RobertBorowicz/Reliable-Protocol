@@ -2,6 +2,7 @@ import socket
 import sys
 import zlib
 from struct import *
+from random import randint
 
 class CRPState:
 	CLOSED = 0
@@ -24,6 +25,18 @@ class CRPFlag:
 	RST_FLAG = 0x10 #010000
 	ACK_FLAG = 0x20 #100000
 
+class StateError(Exception):
+	def __init__(self, msg):
+		self.msg = msg
+
+class ChecksumError(Exception):
+	def __init__(self):
+		self.msg = ""
+
+class UnableToConnectException(Exception):
+	def __init__(self):
+		self.msg = "Unable to connect"
+
 class CRPSocket():
 
 	MAX_CRP_PACKET_SIZE = 1024
@@ -31,22 +44,32 @@ class CRPSocket():
 	CRP_MAX_SEQ_NUM = 65535
 	CRP_MAX_ACK_NUM = 65535
 	CRP_HEADER_LENGTH = 12 #length in bytes
+	CRP_MAX_ATTEMPTS = 3
+	CRP_TIMEOUT = 0.25
 
 	def __init__(self, ipv6=False):
 
 		self.mainSocket = None
 		self.state = CRPState.CLOSED
+		self.useIPv6 = ipv6
+		self.clientAddr = 'localhost'
+
+		self.seqNum = 0
+		self.ackNum = 0
+		self.winSize = self.CRP_WINDOW_SIZE
 
 		try:
+			print "Init"
 			if ipv6:
 				self.mainSocket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
 			else:
 				self.mainSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-			self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			print "Made Socket"
+			#self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 		except socket.error:
 			print "Unable to establish a new CRP socket"
 			sys.exit()
+		print "Done"
 
 	def bind(self, address):
 		try:
@@ -55,28 +78,131 @@ class CRPSocket():
 			print "Unable to bind to address: %s" % address
 
 	def listen(self):
-		# TODO
-		pass
+		self.state = CRPState.LISTEN
 
 	def accept(self):
-		# TODO
-		pass
+		if self.state != CRPState.LISTEN:
+			raise StateError("The socket is not yet listening for connections")
+
+		flags = {}
+		while CRPFlag.CON_FLAG not in flags:
+			packet, addr = self.mainSocket.recvfrom(1024)
+			
+			try:
+				headerInfo, data = self.__parsePacket(packet)
+			except ChecksumError:
+				# Drops bad packets
+				continue
+			flags = headerInfo["FLG"]
+			
+			# If we have received a connection request
+			if CRPFlag.CON_FLAG in flags:
+				print "Received connection request"
+				conn = CRPSocket(self.useIPv6)
+				conn.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
+				conn.ackNum = headerInfo["SEQ"] + 1
+				if conn.ackNum > self.CRP_MAX_ACK_NUM:
+					conn.ackNum = 0
+				conn.state = CRPState.CON_RECEIVED
+				conn.winSize = headerInfo["WIN"]
+				conn.clientAddr = addr
+
+				connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
+				conackHeader = conn.__generateHeader(connFlags)
+				CONACK = conn.__packPacket(conackHeader)
+
+				attempts = self.CRP_MAX_ATTEMPTS
+				self.mainSocket.settimeout(self.CRP_TIMEOUT)
+				while (attempts > 0):
+					try:
+						self.mainSocket.sendto(CONACK, conn.clientAddr)
+
+						response, respAddr = self.mainSocket.recvfrom(1024)
+						if respAddr != conn.clientAddr:
+							# Drop packets that aren't part of this connection esatblishment
+							continue
+						try:
+							respInfo, data = self.__parsePacket(response)
+							respFlags = respInfo["FLG"]
+							if CRPFlag.ACK_FLAG in respFlags:
+								conn.seqNum += 1
+								if (respInfo["ACK"] == conn.seqNum) and (respInfo["SEQ"] == conn.ackNum):
+									conn.state = CRPState.CONNECTED
+									print "CONNECTED"
+									conn.bind((conn.clientAddr[0], 5001))
+									print conn.mainSocket.getsockname()
+									return conn, conn.clientAddr
+
+						except ChecksumError:
+							continue
+
+					except socket.timeout:
+						attempts -= 1
+
+			else:
+				# Ignore requests that aren't for a connection
+				print "Received other stuff"
+				continue
 
 	def connect(self, address):
-		# TODO
-		pass
+		
+		print "Hello"
+
+		self.clientAddr = address
+
+		attempts = self.CRP_MAX_ATTEMPTS
+
+		flags = CRPFlag.CON_FLAG
+		self.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
+		header = self.__generateHeader(flags)
+		conPacket = self.__packPacket(header)
+		self.state = CRPState.CON_SENT
+
+		while (attempts > 0):
+			self.mainSocket.settimeout(self.CRP_TIMEOUT)
+			try:
+				self.mainSocket.sendto(conPacket, address)
+
+				response, respAddr = self.mainSocket.recvfrom(1024)
+				
+				respHeader = self.__parsePacket(response)[0]
+				respFlags = respHeader["FLG"]
+				if (CRPFlag.CON_FLAG in respFlags) and (CRPFlag.ACK_FLAG in respFlags):
+					self.__incrementSequence(1)
+					if self.seqNum == respHeader["ACK"]:
+						self.ackNum = (respHeader["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
+						self.state = CRPState.CONNECTED
+						ackHeader = self.__generateHeader(CRPFlag.ACK_FLAG)
+						ackPacket = self.__packPacket(ackHeader)
+						self.mainSocket.sendto(ackPacket, respAddr)
+						print "CONNECTED"
+						break
+
+			except:
+				attempts -= 1
+
+		print "Goodbye"
+		return
+
+	def __incrementSequence(self, amount):
+		self.seqNum += amount
+		if self.seqNum > self.CRP_MAX_SEQ_NUM:
+			self.seqNum %= self.CRP_MAX_SEQ_NUM
 
 	def close(self):
 		# TODO
 		pass
 
 	def sendData(self, data):
-		# TODO
-		pass
+		self.mainSocket.sendto(data, self.clientAddr)
 
 	def recvData(self, buff):
-		# TODO
-		pass
+		response = None
+		try:
+			response, respAddr = self.mainSocket.recvfrom(4096)
+		except socket.error as err:
+			print err
+		return response
 
 	def __packetizeData(self, data):
 		"""Split the input data into CRP sized packets
@@ -95,16 +221,24 @@ class CRPSocket():
 
 		return segments
 
-	def __handlePacket(self, packet):
-		header = packet[:12]
-		headerInfo, packedHeader = self.__parseHeader
+	def __parsePacket(self, packet):
+		header = packet[:self.CRP_HEADER_LENGTH]
+		headerInfo, packedHeader = self.__parseHeader(header)
+
+		checksum = self.__generateChecksum(packedHeader)
 
 		data = None
 		if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
 			data = packet[12:]
+			checksum = self.__generateChecksum(data, checksum)
+
+		if headerInfo["CHK"] != checksum:
+			raise ChecksumError()
+		else:
+			return headerInfo, data
 
 
-	def __generateHeader(self, seq, ack, win, flags):
+	def __generateHeader(self, flags):
 		"""
 		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 		|        Sequence Number        |     Acknowledgment Number     |
@@ -119,21 +253,29 @@ class CRPSocket():
 		"""
 		# Combine offset and flags into 16-bit chunk for packing purposes
 		try:
-			header = pack("<HHHh", seq, ack, win, flags)
+			header = pack("<HHHh", self.seqNum, self.ackNum, self.winSize, flags)
 			return header
 		except:
 			return None
 
-	def __packPacket(self, header, payload):
+	def __packPacket(self, header, payload=None):
+		"""Packs a packet into a single message
+		Calculates checksum for packet and stores in header
+		If there is data, this is used in checksum calculation
+		Data is appended to the final packet
+		"""
 		if payload:
-			checksum = self.generateChecksum(header+payload)
-			fullHeader = pack("<qi", header, checksum)
-			fullPacket = fullHeader + payload
-			return fullPacket
+			checksum = self.__generateChecksum(header+payload)
 		else:
-			checksum = self.generateChecksum(header)
-			fullHeader = pack("<qi", header, checksum)
-			return fullHeader
+			checksum = self.__generateChecksum(header)
+
+		packedHeader, = unpack("<q", header)
+		fullPacket = pack("<qi", packedHeader, checksum)
+
+		if payload:
+			fullPacket += payload
+
+		return fullPacket
 
 	def __parseHeader(self, header):
 		headerInfo = {}
@@ -193,7 +335,10 @@ with open("R:\Documents\Fall 2016\CS 3251\Written_3\Ladder.png", "rb") as f:
 			break"""
 
 """crp = CRPSocket()
-seq = 3500
+crp.bind(('', 5000))
+crp.listen()
+crp.accept()"""
+"""seq = 3500
 ack = 4500
 win = 5
 flags = 0x32
