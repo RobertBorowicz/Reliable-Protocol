@@ -3,6 +3,8 @@ import sys
 import zlib
 from struct import *
 from random import randint
+from collections import deque
+import time
 
 class CRPState:
 	CLOSED = 0
@@ -39,13 +41,14 @@ class UnableToConnectException(Exception):
 
 class CRPSocket():
 
-	MAX_CRP_PACKET_SIZE = 1024
+	CRP_MAX_PACKET_SIZE = 1024
 	CRP_WINDOW_SIZE = 1
-	CRP_MAX_SEQ_NUM = 65535
-	CRP_MAX_ACK_NUM = 65535
+	CRP_MAX_SEQ_NUM = 0xffff
+	CRP_MAX_ACK_NUM = 0xffff
 	CRP_HEADER_LENGTH = 12 #length in bytes
 	CRP_MAX_ATTEMPTS = 3
 	CRP_TIMEOUT = 0.25
+	CRP_PACKET_TIMEOUT = 0.2
 
 	def __init__(self, ipv6=False):
 
@@ -58,6 +61,8 @@ class CRPSocket():
 		self.seqNum = 0
 		self.ackNum = 0
 		self.winSize = self.CRP_WINDOW_SIZE
+
+		self.newWindow = False
 
 		try:
 			print "Init"
@@ -109,7 +114,7 @@ class CRPSocket():
 				conn.state = CRPState.CON_RECEIVED
 				conn.winSize = headerInfo["WIN"]
 				conn.clientAddr = addr
-				conn.bind((addr[0], self.nextPort))
+				conn.bind(('', self.nextPort))
 				self.nextPort = (self.nextPort + 1) % 65535
 
 				connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
@@ -183,6 +188,7 @@ class CRPSocket():
 						break
 
 			except:
+				print "Attempt to connect failed. No response"
 				attempts -= 1
 
 		print "Goodbye"
@@ -198,7 +204,65 @@ class CRPSocket():
 		pass
 
 	def sendData(self, data):
-		self.mainSocket.sendto(data, self.clientAddr)
+		#self.mainSocket.sendto(data, self.clientAddr)
+
+		if not data:
+			# Break on null data
+			raise Exception()
+			return
+
+		if self.state != CRPState.CONNECTED:
+			# Break if we are not connected
+			raise StateError()
+			return
+
+		dataPackets = self.__packetizeData(data)
+
+		unackPackets = {}
+		currSeqNum = self.seqNum
+
+		for packet in dataPackets:
+			header = self.__customHeader(currSeqNum, self.ackNum, self.winSize, CRPFlag.DTA_FLAG)
+			packed = self.__packPacket(header, packet)
+			unackPackets[currSeqNum] = (True, 0, packed)
+			currSeqNum = (currSeqNum + 1) % CRP_MAX_SEQ_NUM
+
+
+		seqNums = list(unackPackets)
+		sendBase = seqNums[0]
+
+		while (seqNums):
+			window = seqNums[0:self.winSize]
+
+			# Send the window of packets
+			for s in window:
+				currTime = time.time()
+				if currTime - unackPackets[s][1] > self.CRP_PACKET_TIMEOUT:
+					print "Packet %s timed out" % s
+					unackPackets[s][0] = True
+				if unackPackets[s][0]:
+					# Handle a window change request on client side
+					# Unpack the current packet and set the correct bit and new window size
+					# Then repack and send
+					if self.newWindow:
+						_, packetData = self.__parsePacket(unackPackets[s][2])
+						newHeader = self.__customHeader(s, self.ackNum, self.winSize, CRPFlag.DTA_FLAG & CRPFlag.WIN_FLAG)
+						newPacket = self.__packPacket(newHeader, packetData)
+						unackPackets[s][2] = newPacket
+						self.newWindow = False
+					unackPackets[s][1] = time.time()
+					self.mainSocket.sendto(unackPackets[s][2], self.clientAddr)
+
+			response, addr = self.mainSocket.recvfrom(1024)
+			try:
+				respInfo, _ = self.__parsePacket(response)
+				if CRPFlag.ACK_FLAG in respInfo["FLG"]:
+					ackNum = respInfo["ACK"]
+			except ChecksumError:
+				continue
+
+
+		return
 
 	def recvData(self, buff):
 		response = None
@@ -219,9 +283,9 @@ class CRPSocket():
 		base = 0
 
 		while (base < len(data)):
-			segment = data[base:base+self.MAX_CRP_PACKET_SIZE]
+			segment = data[base:base+self.CRP_MAX_PACKET_SIZE]
 			segments.append(segment)
-			base += self.MAX_CRP_PACKET_SIZE
+			base += self.CRP_MAX_PACKET_SIZE
 
 		return segments
 
@@ -241,6 +305,12 @@ class CRPSocket():
 		else:
 			return headerInfo, data
 
+	def __customHeader(self, seq, ack, win, flags):
+		try:
+			header = pack("<HHHh", seq, ack, win, flags)
+			return header
+		except:
+			return None
 
 	def __generateHeader(self, flags):
 		"""
@@ -293,7 +363,7 @@ class CRPSocket():
 		headerInfo["WIN"] = win & 0xffff
 		headerInfo["FLG"] = self.__parseFlags(flags & 0xff)
 		headerInfo["CHK"] = checksum
-		packedHeader = pack("HHHh", seq, ack, win, flags)
+		packedHeader = pack("<HHHh", seq, ack, win, flags)
 
 		return headerInfo, packedHeader
 
