@@ -259,6 +259,8 @@ class CRPSocket():
                     respInfo, _ = self.__parsePacket(response)
                     if CRPFlag.ACK_FLAG in respInfo["FLG"]:
                         ackNum = respInfo["ACK"]
+                        print ackNum, "Ack Num"
+                        print sendBase, "Send Base"
                         lastUnacked = ackNum
                         if lastUnacked < sendBase:
                             temp = 1
@@ -293,7 +295,7 @@ class CRPSocket():
 
         dataBuffer = ""
         receiving = True
-        self.mainSocket.settimeout(10)
+        self.mainSocket.settimeout(1)
 
         while (receiving):
 
@@ -302,17 +304,19 @@ class CRPSocket():
                 headerInfo, data = self.__parsePacket(packet)
                 if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
                     dataBuffer += data
-                    nextToAck = headerInfo["SEQ"]
-                    print nextToAck
+                    nextToAck = headerInfo["SEQ"]+1
+                    print nextToAck, "Next ack"
                     respHeader = self.__customHeader(self.seqNum, nextToAck, self.winSize, CRPFlag.ACK_FLAG)
                     respPacket = self.__packPacket(respHeader)
                     self.mainSocket.sendto(respPacket, self.clientAddr)
 
             except socket.timeout as err:
+                print "Timed out receiving"
                 receiving = False
             except ChecksumError as cerr:
                 print cerr
 
+        print "Returning buffer"
         return dataBuffer
 
     def __packetizeData(self, data):
@@ -367,6 +371,7 @@ class CRPSocket():
         |                           Checksum                            |
         +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
         Generates the header without the checksum. The checksum is calculated later
+        This is for a generic header where values are default.
         """
         try:
             header = pack("<HHHh", self.seqNum, self.ackNum, self.winSize, flags)
