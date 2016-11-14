@@ -47,8 +47,8 @@ class CRPSocket():
 	CRP_MAX_ACK_NUM = 0xffff
 	CRP_HEADER_LENGTH = 12 #length in bytes
 	CRP_MAX_ATTEMPTS = 3
-	CRP_TIMEOUT = 0.25
-	CRP_PACKET_TIMEOUT = 0.2
+	CRP_RECV_TIMEOUT = 0.2
+	CRP_PACKET_TIMEOUT = 0.3
 
 	def __init__(self, ipv6=False):
 
@@ -122,7 +122,7 @@ class CRPSocket():
 				CONACK = conn.__packPacket(conackHeader)
 
 				attempts = self.CRP_MAX_ATTEMPTS
-				conn.mainSocket.settimeout(self.CRP_TIMEOUT)
+				conn.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
 				while (attempts > 0):
 					try:
 						conn.mainSocket.sendto(CONACK, conn.clientAddr)
@@ -167,7 +167,7 @@ class CRPSocket():
 		self.state = CRPState.CON_SENT
 
 		while (attempts > 0):
-			self.mainSocket.settimeout(self.CRP_TIMEOUT)
+			self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
 			try:
 				self.mainSocket.sendto(conPacket, address)
 
@@ -191,9 +191,6 @@ class CRPSocket():
 				print "Attempt to connect failed. No response"
 				attempts -= 1
 
-		print "Goodbye"
-		return
-
 	def __incrementSequence(self, amount):
 		self.seqNum += amount
 		if self.seqNum > self.CRP_MAX_SEQ_NUM:
@@ -216,49 +213,74 @@ class CRPSocket():
 			raise StateError()
 			return
 
+		self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
+
 		dataPackets = self.__packetizeData(data)
 
-		unackPackets = {}
+		unackPackets = []
 		currSeqNum = self.seqNum
 
 		for packet in dataPackets:
 			header = self.__customHeader(currSeqNum, self.ackNum, self.winSize, CRPFlag.DTA_FLAG)
 			packed = self.__packPacket(header, packet)
-			unackPackets[currSeqNum] = (True, 0, packed)
-			currSeqNum = (currSeqNum + 1) % CRP_MAX_SEQ_NUM
+			unackPackets.append({"Seq":currSeqNum, "Send":True, "Time":0, "Data":packed})
+			currSeqNum = (currSeqNum + 1) % self.CRP_MAX_SEQ_NUM
 
+		sendBase = self.seqNum
+		lastUnacked = sendBase
 
-		seqNums = list(unackPackets)
-		sendBase = seqNums[0]
-
-		while (seqNums):
-			window = seqNums[0:self.winSize]
+		while (unackPackets):
+			window = unackPackets[0:self.winSize]
 
 			# Send the window of packets
-			for s in window:
-				currTime = time.time()
-				if currTime - unackPackets[s][1] > self.CRP_PACKET_TIMEOUT:
-					print "Packet %s timed out" % s
-					unackPackets[s][0] = True
-				if unackPackets[s][0]:
+			for curr in window:
+				if curr["Send"]:
 					# Handle a window change request on client side
 					# Unpack the current packet and set the correct bit and new window size
 					# Then repack and send
 					if self.newWindow:
-						_, packetData = self.__parsePacket(unackPackets[s][2])
+						_, packetData = self.__parsePacket(curr["Data"])
 						newHeader = self.__customHeader(s, self.ackNum, self.winSize, CRPFlag.DTA_FLAG & CRPFlag.WIN_FLAG)
 						newPacket = self.__packPacket(newHeader, packetData)
-						unackPackets[s][2] = newPacket
+						curr["Data"] = newPacket
 						self.newWindow = False
-					unackPackets[s][1] = time.time()
-					self.mainSocket.sendto(unackPackets[s][2], self.clientAddr)
+					curr["Time"] = time.time()
+					curr["Send"] = False
+					self.mainSocket.sendto(curr["Data"], self.clientAddr)
 
-			response, addr = self.mainSocket.recvfrom(1024)
+				currTime = time.time()
+				if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
+					print "Packet %s timed out" % s
+					curr["Send"] = True
+
 			try:
-				respInfo, _ = self.__parsePacket(response)
-				if CRPFlag.ACK_FLAG in respInfo["FLG"]:
-					ackNum = respInfo["ACK"]
-			except ChecksumError:
+				response, addr = self.mainSocket.recvfrom(1024)
+				try:
+					respInfo, _ = self.__parsePacket(response)
+					if CRPFlag.ACK_FLAG in respInfo["FLG"]:
+						ackNum = respInfo["ACK"]
+						lastUnacked = ackNum
+						if lastUnacked < sendBase:
+							temp = 1
+							for w in window:
+								if w["Seq"] == lastUnacked:
+									break
+								else:
+									temp += 1
+							newBase = temp
+						else:
+							newBase = lastUnacked-sendBase
+						if newBase >= len(unackPackets):
+							# Nothing left to send
+							break
+						unackPackets = unackPackets[newBase:]
+						sendBase = lastUnacked
+						self.__incrementSequence(newBase)
+
+				except ChecksumError:
+					# Drop bad ACK
+					continue
+			except socket.timeout:
 				continue
 
 
@@ -266,11 +288,32 @@ class CRPSocket():
 
 	def recvData(self, buff):
 		response = None
-		try:
-			response, respAddr = self.mainSocket.recvfrom(4096)
-		except socket.error as err:
-			print err
-		return response
+
+		nextToAck = self.ackNum
+
+		dataBuffer = ""
+		receiving = True
+		self.mainSocket.settimeout(10)
+
+		while (receiving):
+
+			try:
+				packet, addr = self.mainSocket.recvfrom(buff)
+				headerInfo, data = self.__parsePacket(packet)
+				if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
+					dataBuffer += data
+					nextToAck = headerInfo["SEQ"]
+					print nextToAck
+					respHeader = self.__customHeader(self.seqNum, nextToAck, self.winSize, CRPFlag.ACK_FLAG)
+					respPacket = self.__packPacket(respHeader)
+					self.mainSocket.sendto(respPacket, self.clientAddr)
+
+			except socket.timeout as err:
+				receiving = False
+			except ChecksumError as cerr:
+				print cerr
+
+		return dataBuffer
 
 	def __packetizeData(self, data):
 		"""Split the input data into CRP sized packets
@@ -317,15 +360,14 @@ class CRPSocket():
 		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 		|        Sequence Number        |     Acknowledgment Number     |
 		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		|                               |    |   Data   |    |A|W|D|C|E||
-		|         Window Length         |x000|  Offset  |x000|C|I|T|O|N||
-		|                               |    |          |    |K|N|A|N|D||
+		|                               |                  |A|R|W|D|C|E||
+		|         Window Length         |    x0000000000   |C|S|I|T|O|N||
+		|                               |                  |K|T|N|A|N|D||
 		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 		|                           Checksum                            |
 		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 		Generates the header without the checksum. The checksum is calculated later
 		"""
-		# Combine offset and flags into 16-bit chunk for packing purposes
 		try:
 			header = pack("<HHHh", self.seqNum, self.ackNum, self.winSize, flags)
 			return header
