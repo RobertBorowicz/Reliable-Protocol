@@ -7,448 +7,448 @@ from collections import deque
 import time
 
 class CRPState:
-	CLOSED = 0
-	LISTEN = 1
-	CON_SENT = 2
-	CON_RECEIVED = 3
-	CONNECTED = 4
-	END_ACK_WAIT = 5
-	END_WAIT = 6
-	TERMINATING = 7
-	CLOSE_WAIT = 8
-	END_ACK = 9
-	TIMEOUT = 10
+    CLOSED = 0
+    LISTEN = 1
+    CON_SENT = 2
+    CON_RECEIVED = 3
+    CONNECTED = 4
+    END_ACK_WAIT = 5
+    END_WAIT = 6
+    TERMINATING = 7
+    CLOSE_WAIT = 8
+    END_ACK = 9
+    TIMEOUT = 10
 
 class CRPFlag:
-	END_FLAG = 0x1  #000001
-	CON_FLAG = 0x2  #000010
-	DTA_FLAG = 0x4  #000100
-	WIN_FLAG = 0x8  #001000
-	RST_FLAG = 0x10 #010000
-	ACK_FLAG = 0x20 #100000
+    END_FLAG = 0x1  #000001
+    CON_FLAG = 0x2  #000010
+    DTA_FLAG = 0x4  #000100
+    WIN_FLAG = 0x8  #001000
+    RST_FLAG = 0x10 #010000
+    ACK_FLAG = 0x20 #100000
 
 class StateError(Exception):
-	def __init__(self, msg):
-		self.msg = msg
+    def __init__(self, msg):
+        self.msg = msg
 
 class ChecksumError(Exception):
-	def __init__(self):
-		self.msg = ""
+    def __init__(self):
+        self.msg = ""
 
 class UnableToConnectException(Exception):
-	def __init__(self):
-		self.msg = "Unable to connect"
+    def __init__(self):
+        self.msg = "Unable to connect"
 
 class CRPSocket():
 
-	CRP_MAX_PACKET_SIZE = 1024
-	CRP_WINDOW_SIZE = 1
-	CRP_MAX_SEQ_NUM = 0xffff
-	CRP_MAX_ACK_NUM = 0xffff
-	CRP_HEADER_LENGTH = 12 #length in bytes
-	CRP_MAX_ATTEMPTS = 3
-	CRP_RECV_TIMEOUT = 0.2
-	CRP_PACKET_TIMEOUT = 0.3
-
-	def __init__(self, ipv6=False):
-
-		self.mainSocket = None
-		self.state = CRPState.CLOSED
-		self.useIPv6 = ipv6
-		self.clientAddr = 'localhost'
-		self.nextPort = 5000
-
-		self.seqNum = 0
-		self.ackNum = 0
-		self.winSize = self.CRP_WINDOW_SIZE
-
-		self.newWindow = False
-
-		try:
-			print "Init"
-			if ipv6:
-				self.mainSocket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-			else:
-				self.mainSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-			print "Made Socket"
-			self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-		except socket.error as err:
-			print "Unable to establish a new CRP socket"
-			sys.exit()
-		print "Done"
-
-	def bind(self, address):
-		try:
-			self.mainSocket.bind(address)
-			self.nextPort = (address[1] + 1) % 65535
-		except socket.error:
-			print err
-			print "Unable to bind to address: %s %s" % address
-
-	def listen(self):
-		self.state = CRPState.LISTEN
-
-	def accept(self):
-		if self.state != CRPState.LISTEN:
-			raise StateError("The socket is not yet listening for connections")
-
-		flags = {}
-		while CRPFlag.CON_FLAG not in flags:
-			packet, addr = self.mainSocket.recvfrom(1024)
-			
-			try:
-				headerInfo, data = self.__parsePacket(packet)
-			except ChecksumError:
-				# Drops bad packets
-				continue
-			flags = headerInfo["FLG"]
-			
-			# If we have received a connection request
-			if CRPFlag.CON_FLAG in flags:
-				print "Received connection request"
-				conn = CRPSocket(self.useIPv6)
-				conn.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
-				conn.ackNum = headerInfo["SEQ"] + 1
-				if conn.ackNum > self.CRP_MAX_ACK_NUM:
-					conn.ackNum = 0
-				conn.state = CRPState.CON_RECEIVED
-				conn.winSize = headerInfo["WIN"]
-				conn.clientAddr = addr
-				conn.bind(('', self.nextPort))
-				self.nextPort = (self.nextPort + 1) % 65535
-
-				connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
-				conackHeader = conn.__generateHeader(connFlags)
-				CONACK = conn.__packPacket(conackHeader)
-
-				attempts = self.CRP_MAX_ATTEMPTS
-				conn.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
-				while (attempts > 0):
-					try:
-						conn.mainSocket.sendto(CONACK, conn.clientAddr)
-
-						response, respAddr = conn.mainSocket.recvfrom(1024)
-						if respAddr != conn.clientAddr:
-							# Drop packets that aren't part of this connection esatblishment
-							continue
-						try:
-							respInfo, data = conn.__parsePacket(response)
-							respFlags = respInfo["FLG"]
-							if CRPFlag.ACK_FLAG in respFlags:
-								conn.seqNum += 1
-								if (respInfo["ACK"] == conn.seqNum) and (respInfo["SEQ"] == conn.ackNum):
-									conn.state = CRPState.CONNECTED
-									print "CONNECTED"
-									return conn, conn.clientAddr
-
-						except ChecksumError:
-							continue
-
-					except socket.timeout:
-						attempts -= 1
-
-			else:
-				# Ignore requests that aren't for a connection
-				print "Received other stuff"
-				continue
-
-	def connect(self, address):
-		
-		print "Hello"
-
-		self.clientAddr = address
-
-		attempts = self.CRP_MAX_ATTEMPTS
-
-		flags = CRPFlag.CON_FLAG
-		self.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
-		header = self.__generateHeader(flags)
-		conPacket = self.__packPacket(header)
-		self.state = CRPState.CON_SENT
-
-		while (attempts > 0):
-			self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
-			try:
-				self.mainSocket.sendto(conPacket, address)
-
-				response, respAddr = self.mainSocket.recvfrom(1024)
-				
-				respHeader = self.__parsePacket(response)[0]
-				respFlags = respHeader["FLG"]
-				if (CRPFlag.CON_FLAG in respFlags) and (CRPFlag.ACK_FLAG in respFlags):
-					self.__incrementSequence(1)
-					if self.seqNum == respHeader["ACK"]:
-						self.clientAddr = respAddr
-						self.ackNum = (respHeader["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
-						self.state = CRPState.CONNECTED
-						ackHeader = self.__generateHeader(CRPFlag.ACK_FLAG)
-						ackPacket = self.__packPacket(ackHeader)
-						self.mainSocket.sendto(ackPacket, respAddr)
-						print "CONNECTED"
-						break
-
-			except:
-				print "Attempt to connect failed. No response"
-				attempts -= 1
-
-	def __incrementSequence(self, amount):
-		self.seqNum += amount
-		if self.seqNum > self.CRP_MAX_SEQ_NUM:
-			self.seqNum %= self.CRP_MAX_SEQ_NUM
-
-	def close(self):
-		# TODO
-		pass
-
-	def sendData(self, data):
-		#self.mainSocket.sendto(data, self.clientAddr)
-
-		if not data:
-			# Break on null data
-			raise Exception()
-			return
-
-		if self.state != CRPState.CONNECTED:
-			# Break if we are not connected
-			raise StateError()
-			return
-
-		self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
-
-		dataPackets = self.__packetizeData(data)
-
-		unackPackets = []
-		currSeqNum = self.seqNum
-
-		for packet in dataPackets:
-			header = self.__customHeader(currSeqNum, self.ackNum, self.winSize, CRPFlag.DTA_FLAG)
-			packed = self.__packPacket(header, packet)
-			unackPackets.append({"Seq":currSeqNum, "Send":True, "Time":0, "Data":packed})
-			currSeqNum = (currSeqNum + 1) % self.CRP_MAX_SEQ_NUM
-
-		sendBase = self.seqNum
-		lastUnacked = sendBase
-
-		while (unackPackets):
-			window = unackPackets[0:self.winSize]
-
-			# Send the window of packets
-			for curr in window:
-				if curr["Send"]:
-					# Handle a window change request on client side
-					# Unpack the current packet and set the correct bit and new window size
-					# Then repack and send
-					if self.newWindow:
-						_, packetData = self.__parsePacket(curr["Data"])
-						newHeader = self.__customHeader(s, self.ackNum, self.winSize, CRPFlag.DTA_FLAG & CRPFlag.WIN_FLAG)
-						newPacket = self.__packPacket(newHeader, packetData)
-						curr["Data"] = newPacket
-						self.newWindow = False
-					curr["Time"] = time.time()
-					curr["Send"] = False
-					self.mainSocket.sendto(curr["Data"], self.clientAddr)
-
-				currTime = time.time()
-				if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
-					print "Packet %s timed out" % s
-					curr["Send"] = True
-
-			try:
-				response, addr = self.mainSocket.recvfrom(1024)
-				try:
-					respInfo, _ = self.__parsePacket(response)
-					if CRPFlag.ACK_FLAG in respInfo["FLG"]:
-						ackNum = respInfo["ACK"]
-						lastUnacked = ackNum
-						if lastUnacked < sendBase:
-							temp = 1
-							for w in window:
-								if w["Seq"] == lastUnacked:
-									break
-								else:
-									temp += 1
-							newBase = temp
-						else:
-							newBase = lastUnacked-sendBase
-						if newBase >= len(unackPackets):
-							# Nothing left to send
-							break
-						unackPackets = unackPackets[newBase:]
-						sendBase = lastUnacked
-						self.__incrementSequence(newBase)
-
-				except ChecksumError:
-					# Drop bad ACK
-					continue
-			except socket.timeout:
-				continue
-
-
-		return
-
-	def recvData(self, buff):
-		response = None
-
-		nextToAck = self.ackNum
-
-		dataBuffer = ""
-		receiving = True
-		self.mainSocket.settimeout(10)
-
-		while (receiving):
-
-			try:
-				packet, addr = self.mainSocket.recvfrom(buff)
-				headerInfo, data = self.__parsePacket(packet)
-				if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
-					dataBuffer += data
-					nextToAck = headerInfo["SEQ"]
-					print nextToAck
-					respHeader = self.__customHeader(self.seqNum, nextToAck, self.winSize, CRPFlag.ACK_FLAG)
-					respPacket = self.__packPacket(respHeader)
-					self.mainSocket.sendto(respPacket, self.clientAddr)
-
-			except socket.timeout as err:
-				receiving = False
-			except ChecksumError as cerr:
-				print cerr
-
-		return dataBuffer
-
-	def __packetizeData(self, data):
-		"""Split the input data into CRP sized packets
-		This ensures that packets are of maximum size 1024
-		Any trailing segment that is less than 1024 bytes will
-		be retained at its original length
-		Returned as a list of data segments
-		"""
-		segments = []
-		base = 0
-
-		while (base < len(data)):
-			segment = data[base:base+self.CRP_MAX_PACKET_SIZE]
-			segments.append(segment)
-			base += self.CRP_MAX_PACKET_SIZE
-
-		return segments
-
-	def __parsePacket(self, packet):
-		header = packet[:self.CRP_HEADER_LENGTH]
-		headerInfo, packedHeader = self.__parseHeader(header)
-
-		checksum = self.__generateChecksum(packedHeader)
-
-		data = None
-		if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
-			data = packet[12:]
-			checksum = self.__generateChecksum(data, checksum)
-
-		if headerInfo["CHK"] != checksum:
-			raise ChecksumError()
-		else:
-			return headerInfo, data
-
-	def __customHeader(self, seq, ack, win, flags):
-		try:
-			header = pack("<HHHh", seq, ack, win, flags)
-			return header
-		except:
-			return None
-
-	def __generateHeader(self, flags):
-		"""
-		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		|        Sequence Number        |     Acknowledgment Number     |
-		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		|                               |                  |A|R|W|D|C|E||
-		|         Window Length         |    x0000000000   |C|S|I|T|O|N||
-		|                               |                  |K|T|N|A|N|D||
-		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		|                           Checksum                            |
-		+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		Generates the header without the checksum. The checksum is calculated later
-		"""
-		try:
-			header = pack("<HHHh", self.seqNum, self.ackNum, self.winSize, flags)
-			return header
-		except:
-			return None
-
-	def __packPacket(self, header, payload=None):
-		"""Packs a packet into a single message
-		Calculates checksum for packet and stores in header
-		If there is data, this is used in checksum calculation
-		Data is appended to the final packet
-		"""
-		if payload:
-			checksum = self.__generateChecksum(header+payload)
-		else:
-			checksum = self.__generateChecksum(header)
-
-		packedHeader, = unpack("<q", header)
-		fullPacket = pack("<qi", packedHeader, checksum)
-
-		if payload:
-			fullPacket += payload
-
-		return fullPacket
-
-	def __parseHeader(self, header):
-		headerInfo = {}
-
-		if len(header) != self.CRP_HEADER_LENGTH:
-			return None
-
-		seq, ack, win, flags, checksum = unpack("<HHHhi", header)
-		headerInfo["SEQ"] = seq & 0xffff
-		headerInfo["ACK"] = ack & 0xffff
-		headerInfo["WIN"] = win & 0xffff
-		headerInfo["FLG"] = self.__parseFlags(flags & 0xff)
-		headerInfo["CHK"] = checksum
-		packedHeader = pack("<HHHh", seq, ack, win, flags)
-
-		return headerInfo, packedHeader
-
-	def __parseFlags(self, flags):
-		setFlags = []
-
-		if CRPFlag.END_FLAG & flags:
-			setFlags.append(CRPFlag.END_FLAG)
-		if CRPFlag.CON_FLAG & flags:
-			setFlags.append(CRPFlag.CON_FLAG)
-		if CRPFlag.DTA_FLAG & flags:
-			setFlags.append(CRPFlag.DTA_FLAG)
-		if CRPFlag.WIN_FLAG & flags:
-			setFlags.append(CRPFlag.WIN_FLAG)
-		if CRPFlag.RST_FLAG & flags:
-			setFlags.append(CRPFlag.RST_FLAG)
-		if CRPFlag.ACK_FLAG & flags:
-			setFlags.append(CRPFlag.ACK_FLAG)
-
-		return setFlags
-
-	def __generateChecksum(self, data, value=None):
-		if not value:
-			return zlib.adler32(data)
-		return zlib.adler32(data, value)
-
-	def __validateChecksum(self, checksum, data):
-		if checksum != self.__generateChecksum(data):
-			return False
-		return True
+    CRP_MAX_PACKET_SIZE = 1024
+    CRP_WINDOW_SIZE = 1
+    CRP_MAX_SEQ_NUM = 0xffff
+    CRP_MAX_ACK_NUM = 0xffff
+    CRP_HEADER_LENGTH = 12 #length in bytes
+    CRP_MAX_ATTEMPTS = 3
+    CRP_RECV_TIMEOUT = 0.2
+    CRP_PACKET_TIMEOUT = 0.3
+
+    def __init__(self, ipv6=False):
+
+        self.mainSocket = None
+        self.state = CRPState.CLOSED
+        self.useIPv6 = ipv6
+        self.clientAddr = 'localhost'
+        self.nextPort = 5000
+
+        self.seqNum = 0
+        self.ackNum = 0
+        self.winSize = self.CRP_WINDOW_SIZE
+
+        self.newWindow = False
+
+        try:
+            print "Init"
+            if ipv6:
+                self.mainSocket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            else:
+                self.mainSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            print "Made Socket"
+            self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except socket.error as err:
+            print "Unable to establish a new CRP socket"
+            sys.exit()
+        print "Done"
+
+    def bind(self, address):
+        try:
+            self.mainSocket.bind(address)
+            self.nextPort = (address[1] + 1) % 65535
+        except socket.error:
+            print err
+            print "Unable to bind to address: %s %s" % address
+
+    def listen(self):
+        self.state = CRPState.LISTEN
+
+    def accept(self):
+        if self.state != CRPState.LISTEN:
+            raise StateError("The socket is not yet listening for connections")
+
+        flags = {}
+        while CRPFlag.CON_FLAG not in flags:
+            packet, addr = self.mainSocket.recvfrom(1024)
+            
+            try:
+                headerInfo, data = self.__parsePacket(packet)
+            except ChecksumError:
+                # Drops bad packets
+                continue
+            flags = headerInfo["FLG"]
+            
+            # If we have received a connection request
+            if CRPFlag.CON_FLAG in flags:
+                print "Received connection request"
+                conn = CRPSocket(self.useIPv6)
+                conn.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
+                conn.ackNum = headerInfo["SEQ"] + 1
+                if conn.ackNum > self.CRP_MAX_ACK_NUM:
+                    conn.ackNum = 0
+                conn.state = CRPState.CON_RECEIVED
+                conn.winSize = headerInfo["WIN"]
+                conn.clientAddr = addr
+                conn.bind(('', self.nextPort))
+                self.nextPort = (self.nextPort + 1) % 65535
+
+                connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
+                conackHeader = conn.__generateHeader(connFlags)
+                CONACK = conn.__packPacket(conackHeader)
+
+                attempts = self.CRP_MAX_ATTEMPTS
+                conn.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
+                while (attempts > 0):
+                    try:
+                        conn.mainSocket.sendto(CONACK, conn.clientAddr)
+
+                        response, respAddr = conn.mainSocket.recvfrom(1024)
+                        if respAddr != conn.clientAddr:
+                            # Drop packets that aren't part of this connection esatblishment
+                            continue
+                        try:
+                            respInfo, data = conn.__parsePacket(response)
+                            respFlags = respInfo["FLG"]
+                            if CRPFlag.ACK_FLAG in respFlags:
+                                conn.seqNum += 1
+                                if (respInfo["ACK"] == conn.seqNum) and (respInfo["SEQ"] == conn.ackNum):
+                                    conn.state = CRPState.CONNECTED
+                                    print "CONNECTED"
+                                    return conn, conn.clientAddr
+
+                        except ChecksumError:
+                            continue
+
+                    except socket.timeout:
+                        attempts -= 1
+
+            else:
+                # Ignore requests that aren't for a connection
+                print "Received other stuff"
+                continue
+
+    def connect(self, address):
+        
+        print "Hello"
+
+        self.clientAddr = address
+
+        attempts = self.CRP_MAX_ATTEMPTS
+
+        flags = CRPFlag.CON_FLAG
+        self.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
+        header = self.__generateHeader(flags)
+        conPacket = self.__packPacket(header)
+        self.state = CRPState.CON_SENT
+
+        while (attempts > 0):
+            self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
+            try:
+                self.mainSocket.sendto(conPacket, address)
+
+                response, respAddr = self.mainSocket.recvfrom(1024)
+                
+                respHeader = self.__parsePacket(response)[0]
+                respFlags = respHeader["FLG"]
+                if (CRPFlag.CON_FLAG in respFlags) and (CRPFlag.ACK_FLAG in respFlags):
+                    self.__incrementSequence(1)
+                    if self.seqNum == respHeader["ACK"]:
+                        self.clientAddr = respAddr
+                        self.ackNum = (respHeader["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
+                        self.state = CRPState.CONNECTED
+                        ackHeader = self.__generateHeader(CRPFlag.ACK_FLAG)
+                        ackPacket = self.__packPacket(ackHeader)
+                        self.mainSocket.sendto(ackPacket, respAddr)
+                        print "CONNECTED"
+                        break
+
+            except:
+                print "Attempt to connect failed. No response"
+                attempts -= 1
+
+    def __incrementSequence(self, amount):
+        self.seqNum += amount
+        if self.seqNum > self.CRP_MAX_SEQ_NUM:
+            self.seqNum %= self.CRP_MAX_SEQ_NUM
+
+    def close(self):
+        # TODO
+        pass
+
+    def sendData(self, data):
+        #self.mainSocket.sendto(data, self.clientAddr)
+
+        if not data:
+            # Break on null data
+            raise Exception()
+            return
+
+        if self.state != CRPState.CONNECTED:
+            # Break if we are not connected
+            raise StateError()
+            return
+
+        self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
+
+        dataPackets = self.__packetizeData(data)
+
+        unackPackets = []
+        currSeqNum = self.seqNum
+
+        for packet in dataPackets:
+            header = self.__customHeader(currSeqNum, self.ackNum, self.winSize, CRPFlag.DTA_FLAG)
+            packed = self.__packPacket(header, packet)
+            unackPackets.append({"Seq":currSeqNum, "Send":True, "Time":0, "Data":packed})
+            currSeqNum = (currSeqNum + 1) % self.CRP_MAX_SEQ_NUM
+
+        sendBase = self.seqNum
+        lastUnacked = sendBase
+
+        while (unackPackets):
+            window = unackPackets[0:self.winSize]
+
+            # Send the window of packets
+            for curr in window:
+                if curr["Send"]:
+                    # Handle a window change request on client side
+                    # Unpack the current packet and set the correct bit and new window size
+                    # Then repack and send
+                    if self.newWindow:
+                        _, packetData = self.__parsePacket(curr["Data"])
+                        newHeader = self.__customHeader(s, self.ackNum, self.winSize, CRPFlag.DTA_FLAG & CRPFlag.WIN_FLAG)
+                        newPacket = self.__packPacket(newHeader, packetData)
+                        curr["Data"] = newPacket
+                        self.newWindow = False
+                    curr["Time"] = time.time()
+                    curr["Send"] = False
+                    self.mainSocket.sendto(curr["Data"], self.clientAddr)
+
+                currTime = time.time()
+                if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
+                    print "Packet %s timed out" % s
+                    curr["Send"] = True
+
+            try:
+                response, addr = self.mainSocket.recvfrom(1024)
+                try:
+                    respInfo, _ = self.__parsePacket(response)
+                    if CRPFlag.ACK_FLAG in respInfo["FLG"]:
+                        ackNum = respInfo["ACK"]
+                        lastUnacked = ackNum
+                        if lastUnacked < sendBase:
+                            temp = 1
+                            for w in window:
+                                if w["Seq"] == lastUnacked:
+                                    break
+                                else:
+                                    temp += 1
+                            newBase = temp
+                        else:
+                            newBase = lastUnacked-sendBase
+                        if newBase >= len(unackPackets):
+                            # Nothing left to send
+                            break
+                        unackPackets = unackPackets[newBase:]
+                        sendBase = lastUnacked
+                        self.__incrementSequence(newBase)
+
+                except ChecksumError:
+                    # Drop bad ACK
+                    continue
+            except socket.timeout:
+                continue
+
+
+        return
+
+    def recvData(self, buff):
+        response = None
+
+        nextToAck = self.ackNum
+
+        dataBuffer = ""
+        receiving = True
+        self.mainSocket.settimeout(10)
+
+        while (receiving):
+
+            try:
+                packet, addr = self.mainSocket.recvfrom(buff)
+                headerInfo, data = self.__parsePacket(packet)
+                if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
+                    dataBuffer += data
+                    nextToAck = headerInfo["SEQ"]
+                    print nextToAck
+                    respHeader = self.__customHeader(self.seqNum, nextToAck, self.winSize, CRPFlag.ACK_FLAG)
+                    respPacket = self.__packPacket(respHeader)
+                    self.mainSocket.sendto(respPacket, self.clientAddr)
+
+            except socket.timeout as err:
+                receiving = False
+            except ChecksumError as cerr:
+                print cerr
+
+        return dataBuffer
+
+    def __packetizeData(self, data):
+        """Split the input data into CRP sized packets
+        This ensures that packets are of maximum size 1024
+        Any trailing segment that is less than 1024 bytes will
+        be retained at its original length
+        Returned as a list of data segments
+        """
+        segments = []
+        base = 0
+
+        while (base < len(data)):
+            segment = data[base:base+self.CRP_MAX_PACKET_SIZE]
+            segments.append(segment)
+            base += self.CRP_MAX_PACKET_SIZE
+
+        return segments
+
+    def __parsePacket(self, packet):
+        header = packet[:self.CRP_HEADER_LENGTH]
+        headerInfo, packedHeader = self.__parseHeader(header)
+
+        checksum = self.__generateChecksum(packedHeader)
+
+        data = None
+        if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
+            data = packet[12:]
+            checksum = self.__generateChecksum(data, checksum)
+
+        if headerInfo["CHK"] != checksum:
+            raise ChecksumError()
+        else:
+            return headerInfo, data
+
+    def __customHeader(self, seq, ack, win, flags):
+        try:
+            header = pack("<HHHh", seq, ack, win, flags)
+            return header
+        except:
+            return None
+
+    def __generateHeader(self, flags):
+        """
+        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        |        Sequence Number        |     Acknowledgment Number     |
+        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        |                               |                  |A|R|W|D|C|E||
+        |         Window Length         |    x0000000000   |C|S|I|T|O|N||
+        |                               |                  |K|T|N|A|N|D||
+        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        |                           Checksum                            |
+        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        Generates the header without the checksum. The checksum is calculated later
+        """
+        try:
+            header = pack("<HHHh", self.seqNum, self.ackNum, self.winSize, flags)
+            return header
+        except:
+            return None
+
+    def __packPacket(self, header, payload=None):
+        """Packs a packet into a single message
+        Calculates checksum for packet and stores in header
+        If there is data, this is used in checksum calculation
+        Data is appended to the final packet
+        """
+        if payload:
+            checksum = self.__generateChecksum(header+payload)
+        else:
+            checksum = self.__generateChecksum(header)
+
+        packedHeader, = unpack("<q", header)
+        fullPacket = pack("<qi", packedHeader, checksum)
+
+        if payload:
+            fullPacket += payload
+
+        return fullPacket
+
+    def __parseHeader(self, header):
+        headerInfo = {}
+
+        if len(header) != self.CRP_HEADER_LENGTH:
+            return None
+
+        seq, ack, win, flags, checksum = unpack("<HHHhi", header)
+        headerInfo["SEQ"] = seq & 0xffff
+        headerInfo["ACK"] = ack & 0xffff
+        headerInfo["WIN"] = win & 0xffff
+        headerInfo["FLG"] = self.__parseFlags(flags & 0xff)
+        headerInfo["CHK"] = checksum
+        packedHeader = pack("<HHHh", seq, ack, win, flags)
+
+        return headerInfo, packedHeader
+
+    def __parseFlags(self, flags):
+        setFlags = []
+
+        if CRPFlag.END_FLAG & flags:
+            setFlags.append(CRPFlag.END_FLAG)
+        if CRPFlag.CON_FLAG & flags:
+            setFlags.append(CRPFlag.CON_FLAG)
+        if CRPFlag.DTA_FLAG & flags:
+            setFlags.append(CRPFlag.DTA_FLAG)
+        if CRPFlag.WIN_FLAG & flags:
+            setFlags.append(CRPFlag.WIN_FLAG)
+        if CRPFlag.RST_FLAG & flags:
+            setFlags.append(CRPFlag.RST_FLAG)
+        if CRPFlag.ACK_FLAG & flags:
+            setFlags.append(CRPFlag.ACK_FLAG)
+
+        return setFlags
+
+    def __generateChecksum(self, data, value=None):
+        if not value:
+            return zlib.adler32(data)
+        return zlib.adler32(data, value)
+
+    def __validateChecksum(self, checksum, data):
+        if checksum != self.__generateChecksum(data):
+            return False
+        return True
 
 """crp = CRPSocket()
 total = 0
 with open("R:\Documents\Fall 2016\CS 3251\Written_3\Ladder.png", "rb") as f:
-	while True:
-		data = f.read(4096)
-		if data:
-			packets = crp.packetizeData(data)
-			p = len(packets)
-			total += p
-			print p, total
-		else:
-			break"""
+    while True:
+        data = f.read(4096)
+        if data:
+            packets = crp.packetizeData(data)
+            p = len(packets)
+            total += p
+            print p, total
+        else:
+            break"""
 
 """crp = CRPSocket()
 crp.bind(('', 5000))
