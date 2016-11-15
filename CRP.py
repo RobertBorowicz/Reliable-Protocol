@@ -43,8 +43,8 @@ class CRPSocket():
 
     CRP_MAX_PACKET_SIZE = 1024
     CRP_WINDOW_SIZE = 1
-    CRP_MAX_SEQ_NUM = 0xffff
-    CRP_MAX_ACK_NUM = 0xffff
+    CRP_MAX_SEQ_NUM = 65536
+    CRP_MAX_ACK_NUM = 65536
     CRP_HEADER_LENGTH = 12 #length in bytes
     CRP_MAX_ATTEMPTS = 3
     CRP_RECV_TIMEOUT = 0.2
@@ -199,9 +199,8 @@ class CRPSocket():
         return False
 
     def __incrementSequence(self, amount):
-        self.seqNum += amount
-        if self.seqNum > self.CRP_MAX_SEQ_NUM:
-            self.seqNum %= self.CRP_MAX_SEQ_NUM
+        self.seqNum = (self.seqNum + amount) % self.CRP_MAX_SEQ_NUM
+
 
     def close(self):
         # TODO
@@ -268,11 +267,9 @@ class CRPSocket():
                     respInfo, _ = self.__parsePacket(response)
                     if CRPFlag.ACK_FLAG in respInfo["FLG"]:
                         ackNum = respInfo["ACK"]
-                        print ackNum, "Ack Num"
-                        print sendBase, "Send Base"
                         lastUnacked = ackNum
                         if lastUnacked < sendBase:
-                            temp = 1
+                            temp = 0
                             for w in window:
                                 if w["Seq"] == lastUnacked:
                                     break
@@ -281,7 +278,6 @@ class CRPSocket():
                             newBase = temp
                         else:
                             newBase = lastUnacked-sendBase
-                            print "New Base: %s" % newBase
 
                         self.__incrementSequence(newBase)
                         if newBase >= len(unackPackets):
