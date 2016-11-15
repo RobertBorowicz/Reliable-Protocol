@@ -23,7 +23,7 @@ class CRPFlag:
     END_FLAG = 0x1  #000001
     CON_FLAG = 0x2  #000010
     DTA_FLAG = 0x4  #000100
-    WIN_FLAG = 0x8  #001000
+    WIN_FLAG = 0x8  #001000 Now unused in this implementation
     RST_FLAG = 0x10 #010000
     ACK_FLAG = 0x20 #100000
 
@@ -49,6 +49,7 @@ class CRPSocket():
     CRP_MAX_ATTEMPTS = 3
     CRP_RECV_TIMEOUT = 0.2
     CRP_PACKET_TIMEOUT = 0.3
+    CRP_MAX_WINSIZE = 0xffff
 
     def __init__(self, ipv6=False):
 
@@ -60,7 +61,10 @@ class CRPSocket():
 
         self.seqNum = 0
         self.ackNum = 0
+        self.expectedAck = 0
         self.winSize = self.CRP_WINDOW_SIZE
+        self.clientWinSize = self.CRP_WINDOW_SIZE
+        self.bufferedPackets = {}
 
         self.newWindow = False
 
@@ -112,7 +116,7 @@ class CRPSocket():
                 if conn.ackNum > self.CRP_MAX_ACK_NUM:
                     conn.ackNum = 0
                 conn.state = CRPState.CON_RECEIVED
-                conn.winSize = headerInfo["WIN"]
+                conn.clientWinSize = headerInfo["WIN"]
                 conn.clientAddr = addr
                 conn.bind(('', self.nextPort))
                 self.nextPort = (self.nextPort + 1) % 65535
@@ -181,15 +185,18 @@ class CRPSocket():
                         self.clientAddr = respAddr
                         self.ackNum = (respHeader["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
                         self.state = CRPState.CONNECTED
+                        self.clientWinSize = respHeader["WIN"]
                         ackHeader = self.__generateHeader(CRPFlag.ACK_FLAG)
                         ackPacket = self.__packPacket(ackHeader)
                         self.mainSocket.sendto(ackPacket, respAddr)
                         print "CONNECTED"
-                        break
+                        return True
 
             except:
                 print "Attempt to connect failed. No response"
                 attempts -= 1
+
+        return False
 
     def __incrementSequence(self, amount):
         self.seqNum += amount
@@ -228,9 +235,10 @@ class CRPSocket():
 
         sendBase = self.seqNum
         lastUnacked = sendBase
+        print "Unacked Packets: %s" % len(unackPackets)
 
         while (unackPackets):
-            window = unackPackets[0:self.winSize]
+            window = unackPackets[0:self.clientWinSize]
 
             # Send the window of packets
             for curr in window:
@@ -246,11 +254,12 @@ class CRPSocket():
                         self.newWindow = False
                     curr["Time"] = time.time()
                     curr["Send"] = False
+                    print "Sending sequence number: %s" % curr["Seq"]
                     self.mainSocket.sendto(curr["Data"], self.clientAddr)
 
                 currTime = time.time()
                 if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
-                    print "Packet %s timed out" % s
+                    print "Packet %s timed out" % curr["Seq"]
                     curr["Send"] = True
 
             try:
@@ -272,12 +281,16 @@ class CRPSocket():
                             newBase = temp
                         else:
                             newBase = lastUnacked-sendBase
+                            print "New Base: %s" % newBase
+
+                        self.__incrementSequence(newBase)
                         if newBase >= len(unackPackets):
                             # Nothing left to send
+                            print "Nothing left to send here"
                             break
                         unackPackets = unackPackets[newBase:]
                         sendBase = lastUnacked
-                        self.__incrementSequence(newBase)
+
 
                 except ChecksumError:
                     # Drop bad ACK
@@ -289,35 +302,68 @@ class CRPSocket():
         return
 
     def recvData(self, buff):
-        response = None
 
-        nextToAck = self.ackNum
+        dataBuffer = ''
 
-        dataBuffer = ""
         receiving = True
+
         self.mainSocket.settimeout(1)
+        timeoutsBeforeReturn = 3
 
         while (receiving):
 
             try:
+                # Check if buffered packets can be order and returned
+
+
                 packet, addr = self.mainSocket.recvfrom(buff)
-                headerInfo, data = self.__parsePacket(packet)
+                headerInfo, payload = self.__parsePacket(packet)
                 if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
-                    dataBuffer += data
-                    nextToAck = headerInfo["SEQ"]+1
-                    print nextToAck, "Next ack"
-                    respHeader = self.__customHeader(self.seqNum, nextToAck, self.winSize, CRPFlag.ACK_FLAG)
+                    currSeq = headerInfo["SEQ"]
+                    if currSeq < self.ackNum:
+                        # Already received this packet. Ignore it
+                        continue
+                    elif currSeq > self.ackNum:
+                        # Buffer packet and continue
+                        if currSeq < ((self.ackNum + self.winSize) % self.CRP_MAX_ACK_NUM):
+                            self.bufferedPackets[currSeq] = payload
+                        else:
+                            # Drop any other packet not in window
+                            continue
+                    else:
+                        # Correct next packet. Append the data to our buffer
+                        dataBuffer += payload
+                        self.ackNum = (self.ackNum + 1) % self.CRP_MAX_ACK_NUM
+
+                    print "Received sequence number: %s" % currSeq
+                    print "Acking: %s" % self.ackNum
+                    flags = CRPFlag.ACK_FLAG
+                    respHeader = self.__customHeader(self.seqNum, self.ackNum, self.winSize, CRPFlag.ACK_FLAG)
                     respPacket = self.__packPacket(respHeader)
                     self.mainSocket.sendto(respPacket, self.clientAddr)
 
+                    # Check if we need to return from data from the buffer
+                    if len(dataBuffer) + self.CRP_MAX_PACKET_SIZE > buff:
+                        # Return our buffer if we may exceed buff size
+                        return dataBuffer
+
             except socket.timeout as err:
-                print "Timed out receiving"
-                receiving = False
+                # If we stop receiving for a while, break the loop to return any buffered data
+                timeoutsBeforeReturn -= 1
+                if timeoutsBeforeReturn == 0:
+                    receiving = False
             except ChecksumError as cerr:
-                print cerr
+                # Drop corrupted packets
+                continue
 
         print "Returning buffer"
         return dataBuffer
+
+    def updateWindowSize(self, newWinSize):
+        if newWinSize >= 0 and newWinSize < self.CRP_MAX_WINSIZE:
+            self.winSize = newWinSize
+        else:
+            raise Exception("Invalid window size. Must be positive integer < 65536")
 
     def __packetizeData(self, data):
         """Split the input data into CRP sized packets
