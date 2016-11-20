@@ -3,7 +3,6 @@ import sys
 import zlib
 from struct import *
 from random import randint
-from collections import deque
 import time
 
 class CRPState:
@@ -36,19 +35,20 @@ class ChecksumError(Exception):
         self.msg = ""
 
 class UnableToConnectException(Exception):
-    def __init__(self):
-        self.msg = "Unable to connect"
+    def __init__(self, msg):
+        self.msg = msg
 
 class CRPSocket():
 
     CRP_MAX_PACKET_SIZE = 1024
-    CRP_WINDOW_SIZE = 10
+    CRP_WINDOW_SIZE = 5
     CRP_MAX_SEQ_NUM = 65536
     CRP_MAX_ACK_NUM = 65536
     CRP_HEADER_LENGTH = 12 #length in bytes
     CRP_MAX_ATTEMPTS = 3
     CRP_RECV_TIMEOUT = 0.2
-    CRP_PACKET_TIMEOUT = .2
+    CRP_CON_TIMEOUT = 0.5
+    CRP_PACKET_TIMEOUT = 0.1
     CRP_MAX_WINSIZE = 0xffff
 
     def __init__(self, ipv6=False):
@@ -97,65 +97,163 @@ class CRPSocket():
         if self.state != CRPState.LISTEN:
             raise StateError("The socket is not yet listening for connections")
 
-        flags = {}
-        while CRPFlag.CON_FLAG not in flags:
+        waiting = True
+        while (waiting):
             packet, addr = self.mainSocket.recvfrom(1024)
             
-            try:
-                headerInfo, data = self.__parsePacket(packet)
-            except ChecksumError:
-                # Drops bad packets
+            headerInfo, data = self.__parsePacket(packet)
+            
+            if headerInfo["CHK"] == 0:
+                # Corrupted packet
                 continue
+
+            if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
+                # Connection was reset but client still sending
+                # Reset connection
+                print "Resetting connection"
+                resetHeader = self.__generateHeader(CRPFlag.RST_FLAG)
+                RST = self.__packPacket(resetHeader)
+                self.mainSocket.sendto(RST, self.clientAddr)
+                self.state = CRPState.LISTEN
+                continue
+
             flags = headerInfo["FLG"]
             
             # If we have received a connection request
             if CRPFlag.CON_FLAG in flags:
                 print "Received connection request"
-                conn = CRPSocket(self.useIPv6)
-                conn.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
-                conn.ackNum = headerInfo["SEQ"] + 1
-                if conn.ackNum > self.CRP_MAX_ACK_NUM:
-                    conn.ackNum = 0
-                conn.state = CRPState.CON_RECEIVED
-                conn.clientWinSize = headerInfo["WIN"]
-                conn.clientAddr = addr
-                conn.bind(('', self.nextPort))
-                self.nextPort = (self.nextPort + 1) % 65535
+                self.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
+                self.ackNum = (headerInfo["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
+                self.state = CRPState.CON_RECEIVED
+                self.clientWinSize = headerInfo["WIN"]
+                self.clientAddr = addr
+                #conn.bind(('', self.nextPort))
+                #self.nextPort = (self.nextPort + 1) % 65536
 
                 connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
-                conackHeader = conn.__generateHeader(connFlags)
-                CONACK = conn.__packPacket(conackHeader)
+                conackHeader = self.__generateHeader(connFlags)
+                CONACK = self.__packPacket(conackHeader)
 
                 attempts = self.CRP_MAX_ATTEMPTS
-                conn.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
+                self.mainSocket.settimeout(self.CRP_CON_TIMEOUT)
                 while (attempts > 0):
                     try:
-                        conn.mainSocket.sendto(CONACK, conn.clientAddr)
+                        self.mainSocket.sendto(CONACK, self.clientAddr)
 
-                        response, respAddr = conn.mainSocket.recvfrom(1024)
-                        if respAddr != conn.clientAddr:
-                            # Drop packets that aren't part of this connection esatblishment
+                        response, respAddr = self.mainSocket.recvfrom(1024)
+                        if respAddr != self.clientAddr:
+                            # Drop packets that aren't part of this connection establishment
                             continue
-                        try:
-                            respInfo, data = conn.__parsePacket(response)
-                            respFlags = respInfo["FLG"]
-                            if CRPFlag.ACK_FLAG in respFlags:
-                                conn.seqNum += 1
-                                if (respInfo["ACK"] == conn.seqNum) and (respInfo["SEQ"] == conn.ackNum):
-                                    conn.state = CRPState.CONNECTED
-                                    print "CONNECTED"
-                                    return conn, conn.clientAddr
 
-                        except ChecksumError:
+                        respInfo, data = self.__parsePacket(response)
+
+                        if respInfo["CHK"] == 0:
+                            # Corrupted packet
                             continue
+
+                        respFlags = respInfo["FLG"]
+                        if CRPFlag.ACK_FLAG not in respFlags and CRPFlag.DTA_FLAG in respFlags:
+                            # ACK from client was lost at some point
+                            # Reset connection
+                            print "Resetting connection"
+                            resetHeader = self.__generateHeader(CRPFlag.RST_FLAG)
+                            RST = self.__packPacket(resetHeader)
+                            self.mainSocket.sendto(RST, self.clientAddr)
+                            self.state = CRPState.LISTEN
+                            break
+
+                        if CRPFlag.ACK_FLAG in respFlags:
+                            self.seqNum = (self.seqNum + 1) % self.CRP_MAX_ACK_NUM
+                            if (respInfo["ACK"] == self.seqNum) and (respInfo["SEQ"] == self.ackNum):
+                                self.state = CRPState.CONNECTED
+                                print "CONNECTED"
+                                return self, self.clientAddr
 
                     except socket.timeout:
+                        print "Wait timeout"
                         attempts -= 1
 
             else:
                 # Ignore requests that aren't for a connection
                 print "Received other stuff"
                 continue
+        print "Loop broke"
+
+    """def accept(self):
+                    if self.state != CRPState.LISTEN:
+                        raise StateError("The socket is not yet listening for connections")
+            
+                    waiting = True
+                    while (waiting):
+                        packet, addr = self.mainSocket.recvfrom(1024)
+                        
+                        headerInfo, data = self.__parsePacket(packet)
+                        
+                        if headerInfo["CHK"] == 0:
+                            # Corrupted packet
+                            continue
+            
+                        flags = headerInfo["FLG"]
+                        
+                        # If we have received a connection request
+                        if CRPFlag.CON_FLAG in flags:
+                            print "Received connection request"
+                            conn = CRPSocket(self.useIPv6)
+                            conn.seqNum = randint(0, self.CRP_MAX_SEQ_NUM)
+                            conn.ackNum = (headerInfo["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
+                            conn.state = CRPState.CON_RECEIVED
+                            conn.clientWinSize = headerInfo["WIN"]
+                            conn.clientAddr = addr
+                            conn.bind(('', self.nextPort))
+                            self.nextPort = (self.nextPort + 1) % 65536
+            
+                            connFlags = CRPFlag.CON_FLAG | CRPFlag.ACK_FLAG
+                            conackHeader = conn.__generateHeader(connFlags)
+                            CONACK = conn.__packPacket(conackHeader)
+            
+                            attempts = self.CRP_MAX_ATTEMPTS
+                            conn.mainSocket.settimeout(self.CRP_CON_TIMEOUT)
+                            while (attempts > 0):
+                                try:
+                                    conn.mainSocket.sendto(CONACK, conn.clientAddr)
+            
+                                    response, respAddr = conn.mainSocket.recvfrom(1024)
+                                    if respAddr != conn.clientAddr:
+                                        # Drop packets that aren't part of this connection establishment
+                                        continue
+            
+                                    respInfo, data = conn.__parsePacket(response)
+            
+                                    if respInfo["CHK"] == 0:
+                                        # Corrupted packet
+                                        continue
+            
+                                    respFlags = respInfo["FLG"]
+                                    if CRPFlag.ACK_FLAG not in respFlags and CRPFlag.DTA_FLAG in respFlags:
+                                        # ACK from client was lost at some point
+                                        # Reset connection
+                                        print "Resetting connection"
+                                        resetHeader = conn.__generateHeader(CRPFlag.RST_FLAG)
+                                        RST = conn.__packPacket(resetHeader)
+                                        conn.mainSocket.sendto(RST, conn.clientAddr)
+                                        break
+            
+                                    if CRPFlag.ACK_FLAG in respFlags:
+                                        conn.seqNum = (conn.seqNum + 1) % self.CRP_MAX_ACK_NUM
+                                        if (respInfo["ACK"] == conn.seqNum) and (respInfo["SEQ"] == conn.ackNum):
+                                            conn.state = CRPState.CONNECTED
+                                            print "CONNECTED"
+                                            return conn, conn.clientAddr
+            
+                                except socket.timeout:
+                                    print "Wait timeout"
+                                    attempts -= 1
+            
+                        else:
+                            # Ignore requests that aren't for a connection
+                            print "Received other stuff"
+                            continue
+                    print "Loop broke"""
 
     def connect(self, address):
         
@@ -183,7 +281,7 @@ class CRPSocket():
                 if (CRPFlag.CON_FLAG in respFlags) and (CRPFlag.ACK_FLAG in respFlags):
                     self.__incrementSequence(1)
                     if self.seqNum == respHeader["ACK"]:
-                        self.clientAddr = respAddr
+                        #self.clientAddr = respAddr
                         self.ackNum = (respHeader["SEQ"] + 1) % self.CRP_MAX_ACK_NUM
                         self.state = CRPState.CONNECTED
                         self.clientWinSize = respHeader["WIN"]
@@ -193,10 +291,10 @@ class CRPSocket():
                         print "CONNECTED"
                         return True
 
-            except:
-                print "Attempt to connect failed. No response"
+            except socket.timeout:
                 attempts -= 1
 
+        print "Failed to connect to the remote server. Please try again."
         return False
 
     def __incrementSequence(self, amount):
@@ -212,12 +310,12 @@ class CRPSocket():
 
         if not data:
             # Break on null data
-            raise Exception()
+            raise Exception("Data must not be null")
             return
 
         if self.state != CRPState.CONNECTED:
             # Break if we are not connected
-            raise StateError()
+            raise StateError("No connection established")
             return
 
         self.mainSocket.settimeout(self.CRP_RECV_TIMEOUT)
@@ -262,16 +360,20 @@ class CRPSocket():
                 #print currTime - curr["Time"]
                 if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
                     #print "Packet %s timed out" % curr["Seq"]
+                    #print (currTime - curr["Time"])
                     curr["Send"] = True
 
             try:
                 response, addr = self.mainSocket.recvfrom(self.CRP_HEADER_LENGTH)
                 try:
                     respInfo, _ = self.__parsePacket(response)
+                    if CRPFlag.RST_FLAG in respInfo["FLG"]:
+                        raise UnableToConnectException("Connection was")
+                        return
                     if CRPFlag.ACK_FLAG in respInfo["FLG"]:
                         ackNum = respInfo["ACK"]
                         #if ackNum % 10 == 0:
-                            #print "Received Ack: %s" % ackNum
+                        #print "Received Ack: %s" % ackNum
                         lastUnacked = ackNum
                         if lastUnacked < sendBase:
                             temp = 0
@@ -291,9 +393,11 @@ class CRPSocket():
                             break
                         unackPackets = unackPackets[newBase:]
 
-                        if newBase > 0:
+                        if newBase < self.clientWinSize:
+                            #print self.clientWinSize
                             window[newBase]["Acks"] += 1
                             if window[newBase]["Acks"] > 2:
+                                #print "Retransmit: %s" % window[newBase]["Seq"]
                                 window[newBase]["Acks"] = 0
                                 window[newBase]["Send"] = True
                         sendBase = lastUnacked
@@ -326,6 +430,8 @@ class CRPSocket():
                         dataBuffer += self.bufferedPackets[self.ackNum]
                         del self.bufferedPackets[self.ackNum]
                         self.ackNum = (self.ackNum + 1) % self.CRP_MAX_ACK_NUM
+                        if len(dataBuffer) > buff:
+                            return dataBuffer
                     else:
                         break
 
@@ -336,8 +442,9 @@ class CRPSocket():
                 if CRPFlag.DTA_FLAG in headerInfo["FLG"]:
                     currSeq = headerInfo["SEQ"]
                     if headerInfo["CHK"] == 0:
-                        pass
-                        #print "Corrupted"
+                        #pass
+                        print headerInfo["SEQ"]
+                        print "Corrupted"
                     if currSeq < self.ackNum or headerInfo["CHK"] == 0:
                         # Already received this packet or corrupted. Ignore it
                         pass
