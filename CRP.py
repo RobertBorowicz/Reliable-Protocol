@@ -75,17 +75,14 @@ class CRPSocket():
         self.closeRequested = False
 
         try:
-            print "Init"
             if ipv6:
                 self.mainSocket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
             else:
                 self.mainSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            print "Made Socket"
             self.mainSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except socket.error as err:
             print "Unable to establish a new CRP socket"
             sys.exit()
-        print "Done"
 
     def bind(self, address):
         try:
@@ -103,6 +100,7 @@ class CRPSocket():
             raise StateError("The socket is not yet listening for connections")
 
         while (True):
+            self.mainSocket.settimeout(None)
             packet, addr = self.mainSocket.recvfrom(1024)
             
             headerInfo, data = self.__parsePacket(packet)
@@ -147,6 +145,7 @@ class CRPSocket():
                         response, respAddr = self.mainSocket.recvfrom(1024)
                         if respAddr != self.clientAddr:
                             # Drop packets that aren't part of this connection establishment
+                            print "Not same client"
                             continue
 
                         respInfo, data = self.__parsePacket(response)
@@ -157,7 +156,6 @@ class CRPSocket():
                             continue
 
                         respFlags = respInfo["FLG"]
-                        print respFlags
                         if CRPFlag.DTA_FLAG in respFlags:
                             # ACK from client was lost at some point
                             # Reset connection
@@ -169,8 +167,8 @@ class CRPSocket():
                             break
 
                         if CRPFlag.ACK_FLAG in respFlags:
-                            self.seqNum = (self.seqNum + 1) % self.CRP_MAX_ACK_NUM
-                            if (respInfo["ACK"] == self.seqNum) and (respInfo["SEQ"] == self.ackNum):
+                            if (respInfo["ACK"] == (self.seqNum+1)) and (respInfo["SEQ"] == self.ackNum):
+                                self.seqNum = (self.seqNum + 1) % self.CRP_MAX_ACK_NUM
                                 self.state = CRPState.CONNECTED
                                 print "CONNECTED"
                                 return self, self.clientAddr
@@ -178,7 +176,7 @@ class CRPSocket():
                     except socket.timeout:
                         print "Wait timeout"
                         attempts -= 1
-
+                self.state = CRPState.LISTEN
             else:
                 # Ignore requests that aren't for a connection
                 print "Received other stuff"
@@ -262,8 +260,9 @@ class CRPSocket():
                     print "Loop broke"""
 
     def connect(self, address):
-        
-        print "Hello"
+
+        if self.state > CRPState.LISTEN:
+            raise StateError("Connection has already been attempted or initiated")
 
         self.clientAddr = address
 
@@ -301,6 +300,7 @@ class CRPSocket():
                 attempts -= 1
 
         print "Failed to connect to the remote server. Please try again."
+        self.state = CRPState.CLOSED
         return False
 
     def __incrementSequence(self, amount):
@@ -435,16 +435,18 @@ class CRPSocket():
                 currTime = time.time()
                 #print currTime - curr["Time"]
                 if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
-                    print "Packet %s timed out" % curr["Seq"]
+                    #print "Packet %s timed out" % curr["Seq"]
+                    #print curr["Data"][:20]
                     #print (currTime - curr["Time"])
                     curr["Send"] = True
 
             try:
                 response, addr = self.mainSocket.recvfrom(self.CRP_HEADER_LENGTH)
-                respInfo, _ = self.__parsePacket(response)
+                respInfo, dta = self.__parsePacket(response)
 
                 if respInfo["CHK"] == 0:
                     print "Corrupt packet"
+                    #print dta[:20]
                     continue
                 if CRPFlag.END_FLAG in respInfo["FLG"]:
                     print "Closing"
@@ -473,15 +475,13 @@ class CRPSocket():
                     self.__incrementSequence(newBase)
                     if newBase >= len(unackPackets):
                         # Nothing left to send
-                        #print "Nothing left to send here"
                         break
                     unackPackets = unackPackets[newBase:]
 
+                    # Fast retransmit what is in our window
                     if newBase < self.clientWinSize:
-                        #print self.clientWinSize
                         window[newBase]["Acks"] += 1
                         if window[newBase]["Acks"] > 2:
-                            #print "Retransmit: %s" % window[newBase]["Seq"]
                             window[newBase]["Acks"] = 0
                             window[newBase]["Send"] = True
                     sendBase = lastUnacked
@@ -489,7 +489,7 @@ class CRPSocket():
             except socket.timeout:
                 continue
 
-        print self.sent
+        #print self.sent
         return True
 
     def recvData(self, buff):
@@ -498,7 +498,7 @@ class CRPSocket():
 
         receiving = True
 
-        self.mainSocket.settimeout(1)
+        self.mainSocket.settimeout(0.5)
         timeoutsBeforeReturn = 3
 
         if self.state != CRPState.CONNECTED:
@@ -525,7 +525,7 @@ class CRPSocket():
                     currSeq = headerInfo["SEQ"]
                     if currSeq < self.ackNum or headerInfo["CHK"] == 0:
                         # Already received this packet or corrupted. Ignore it
-                        print "Corrupt"
+                        #print "Corrupt"
                         pass
                     elif currSeq > self.ackNum:
                         # Buffer packet and continue
@@ -563,12 +563,13 @@ class CRPSocket():
                 if timeoutsBeforeReturn == 0:
                     receiving = False
 
-        print "Returning buffer"
+        #print "Returning buffer"
         return dataBuffer
 
     def updateWindowSize(self, newWinSize):
         if newWinSize >= 0 and newWinSize < self.CRP_MAX_WINSIZE:
             self.winSize = newWinSize
+            print "Window size changed"
         else:
             raise Exception("Invalid window size. Must be positive integer < 65536")
 

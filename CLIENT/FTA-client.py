@@ -17,6 +17,7 @@ class FTAClient():
         self.commandQueue = []
         self.receiving = False
         self.sending = False
+        self.active = True
 
     def startClient(self):
         print "Client is ready to receive commands\nFor a list of commands, type 'help'"
@@ -33,11 +34,22 @@ class FTAClient():
                     print 'Must provide a file name'
                     continue
                 if self.idle:
-                    self.getRequest(commands[1])
+                    threading.Thread(target=self.getRequest, args=(commands[1],)).start()
 
             elif command == 'post':
-                # TODO
-                pass
+                if len(commands) < 2:
+                    print 'Must provide a file name'
+                    continue
+
+                if not os.path.isfile(commands[1]):
+                    print "Invalid file name"
+                    continue
+
+                print 'Post request'
+                if self.idle:
+                    print 'Idle'
+                    print commands[1]
+                    threading.Thread(target=self.post, args=(commands[1],)).start()
             elif command == 'connect':
                 print "Attempting connection"
                 self.connect()
@@ -46,15 +58,17 @@ class FTAClient():
                     print 'Please provide a valid window'
                     continue
                 windowLength = int(commands[1])
-                if windowLength < 0 or windowLength > 65535:
-                    print 'Invalid window length. Must be in range [0, 65535]'
+                if windowLength <= 0 or windowLength > 65535:
+                    print 'Invalid window length. Must be in range [1, 65535]'
                     continue
                 self.setWindow(windowLength)
-            elif command == 'terminate':
+            elif command == 'disconnect':
                 while self.sending:
                     pass
                 self.CRP.close()
+                self.active = False
                 sys.exit(0)
+                break
             else:
                 print "Please enter a valid command. ('window x' or 'terminate')"
 
@@ -65,9 +79,30 @@ class FTAClient():
             self.postRequest(command[1])
 
     def queueCommands(self):
-        while True:
+        while self.active:
             if len(self.commandQueue > 0) and self.idle:
                 self.handleCommand(self, commandQueue.pop(0))
+
+    def post(self, file):
+        print 'Servicing post request'
+        postHeader = "POST\n"
+        postHeader += "%s\n" % file
+        postHeader += "LENGTH:%s" % (os.path.getsize(file))
+        print postHeader
+        
+        if self.connected:
+            print postHeader
+            print self.CRP.sendData(postHeader)
+            while self.active:
+                response = self.CRP.recvData(2048)
+                if response:
+                    print response
+                    if response[0:5] == "READY":
+                        self.postRequestData(file)
+                        break
+                    else:
+                        print response
+                        break
 
     def getRequest(self, file):
         getHeader = "GET\n"
@@ -75,8 +110,8 @@ class FTAClient():
 
         if self.connected:
             print getHeader
-            self.CRP.sendData(getHeader)
-            while True:
+            print self.CRP.sendData(getHeader)
+            while self.active:
                 response = self.CRP.recvData(1024)
                 if response:
                     print response
@@ -88,6 +123,22 @@ class FTAClient():
                     else:
                         print response
                         break
+
+    def postRequestData(self, filename):
+        print "Ready to service post request"
+        self.sending = True
+        with open(filename, 'rb') as file:
+            while self.sending:
+                data = file.read()
+                if data:
+                    print "Sending data"
+                    result = self.CRP.sendData(data)
+                    if result:
+                        print "Successfully sent %s bytes to client" % os.path.getsize(filename)
+                    else:
+                        print "Server cancelled and closed the connection before receiving the entire file"
+                    self.sending = False
+                    break
 
 
     def getRequestData(self, file, length):
@@ -108,23 +159,29 @@ class FTAClient():
                             self.receiving = False
                             f.close()
                     else:
-                        if time.time() - lastReceivedTime > 30:
-                            print "Connection timed out. Closing connection"
+                        if time.time() - lastReceivedTime > 15:
+                            print "Connection timed out"
                             f.close()
                             os.remove(file)
                             self.CRP.close()
                             return
                 except:
                     continue
+            if remainingBytes > 0:
+                print "Connection was terminated before receiving the full file"
+                f.close()
+                os.remove(file)
 
 
     def postRequest(self, file):
         pass
 
     def connect(self):
-        print self.address
-        self.CRP.connect(self.address)
-        self.connected = True
+        try:
+            self.CRP.connect(self.address)
+            self.connected = True
+        except:
+            print "Unable to connect"
 
     def initiateClose(self):
         while True:

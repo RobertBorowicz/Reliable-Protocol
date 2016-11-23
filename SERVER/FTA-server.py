@@ -17,13 +17,19 @@ class FTAServer():
         self.crpSock = None
         self.sending = False
         self.receiving = False
+        self.active = True
 
     def handleConnection(self, conn, addr):
         print "Now servicing %s %s" % conn.clientAddr
+        lastServiced = time.time()
         waiting = True
         while (waiting):
             try:
-                request = conn.recvData(1024)
+                if time.time() - lastServiced > 30:
+                    print "Connection timed out. Closing connection..."
+                    conn.close()
+                    break
+                request = conn.recvData(2048)
                 if request:
                     requestLines = request.splitlines()
                     response, fileName, fileSize, reqType = self.handleRequest(requestLines)
@@ -31,14 +37,16 @@ class FTAServer():
 
                     if response[:5] == "READY":
                         conn.sendData(response)
-
+                        print "All good"
                         if reqType == Request.GET:
                             self.getRequest(conn, fileName)
                         elif reqType == Request.POST:
+                            print 'Posting'
                             self.postRequest(conn, fileName, fileSize)
                     else:
                         conn.sendData(response)
                         continue
+                    lastServiced = time.time()
             except:
                 continue
 
@@ -63,26 +71,28 @@ class FTAServer():
         self.receiving = True
         remainingBytes = length
         lastReceivedTime = time.time()
-        with open(fileName, 'rb') as file:
+        buff = ''
+        print 'Receiving data'
+        with open(fileName, 'wb') as file:
             while self.receiving:
-                try:
-                    data = conn.recvData(2048)
-                    if data:
-                        lastReceivedTime = time.time()
-                        remainingBytes -= len(data)
-                        file.write(data)
-                        if remainingBytes == 0:
-                            self.receiving = False
-                            file.close()
-                    else:
-                        if time.time() - lastReceivedTime > 30:
-                            print "Connection timed out. Closing connection"
-                            file.close()
-                            conn.close()
-                            return
-                except:
-                    print 'Exception'
-                    continue
+                data = conn.recvData(2048)
+                if data:
+                    lastReceivedTime = time.time()
+                    remainingBytes -= len(data)
+                    buff += data
+                    #file.write(data)
+                    if remainingBytes < 10000:
+                        print remainingBytes
+                    if remainingBytes == 0:
+                        self.receiving = False
+                        file.write(buff)
+                        file.close()
+                else:
+                    if time.time() - lastReceivedTime > 30:
+                        print "Connection timed out. Closing connection"
+                        file.close()
+                        conn.close()
+                        return
 
 
     def handleRequest(self, requestLines):
@@ -109,7 +119,7 @@ class FTAServer():
             response = ""
 
             try:
-                fileSize = int(requestLines[2])
+                fileSize = int(requestLines[2][7:])
                 response += "READY"
                 return response, fileName, fileSize, Request.POST
 
@@ -139,8 +149,9 @@ class FTAServer():
                     continue
                 self.setWindow(windowLength)
             elif command == 'terminate':
-                while self.sending:
-                    pass
+                """while self.sending:
+                    pass"""
+                self.active = False
                 self.crpSock.close()
                 sys.exit(0)
             else:
@@ -150,12 +161,13 @@ class FTAServer():
         self.crpSock = CRPSocket()
         self.crpSock.bind(('', port))
         threading.Thread(target=self.handleInput).start()
-        self.crpSock.listen()
         try:
             #while True:
-            print "Waiting for connections"
-            conn, addr = self.crpSock.accept()
-            self.handleConnection(conn, addr)
+            while self.active:
+                print "Waiting for connections"
+                self.crpSock.listen()
+                conn, addr = self.crpSock.accept()
+                self.handleConnection(conn, addr)
         except KeyboardInterrupt:
             sys.exit()
 
