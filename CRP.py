@@ -309,6 +309,8 @@ class CRPSocket():
 
     def close(self):
         # TODO
+        print "Attempting to close"
+        print self.state
         if self.state <= CRPState.LISTEN:
             self.mainSocket.close()
             return
@@ -317,6 +319,7 @@ class CRPSocket():
         else:
             self.state = CRPState.END_ACK_WAIT
 
+        print self.state
 
         #self.state = CRPState.END_ACK_WAIT
         closeHeader = self.__generateHeader(CRPFlag.END_FLAG)
@@ -432,60 +435,57 @@ class CRPSocket():
                 currTime = time.time()
                 #print currTime - curr["Time"]
                 if currTime - curr["Time"] > self.CRP_PACKET_TIMEOUT:
-                    #print "Packet %s timed out" % curr["Seq"]
+                    print "Packet %s timed out" % curr["Seq"]
                     #print (currTime - curr["Time"])
                     curr["Send"] = True
 
             try:
                 response, addr = self.mainSocket.recvfrom(self.CRP_HEADER_LENGTH)
-                try:
-                    respInfo, _ = self.__parsePacket(response)
-                    if respInfo["CHK"] == 0:
-                        continue
-                    if CRPFlag.END_FLAG in respInfo["FLG"]:
-                        print "Closing"
-                        self.state = CRPState.CLOSE_WAIT
-                        self.close()
-                        return False
-                    if CRPFlag.RST_FLAG in respInfo["FLG"]:
-                        print "Reset Connection"
-                        raise UnableToConnectException("Connection was not properly established. Please attempt to reconnect")
-                        return False
-                    if CRPFlag.ACK_FLAG in respInfo["FLG"]:
-                        ackNum = respInfo["ACK"]
-                        self.clientWinSize = respInfo["WIN"]
-                        lastUnacked = ackNum
-                        if lastUnacked < sendBase:
-                            temp = 0
-                            for w in window:
-                                if w["Seq"] == lastUnacked:
-                                    break
-                                else:
-                                    temp += 1
-                            newBase = temp
-                        else:
-                            newBase = lastUnacked-sendBase
+                respInfo, _ = self.__parsePacket(response)
 
-                        self.__incrementSequence(newBase)
-                        if newBase >= len(unackPackets):
-                            # Nothing left to send
-                            #print "Nothing left to send here"
-                            break
-                        unackPackets = unackPackets[newBase:]
-
-                        if newBase < self.clientWinSize:
-                            #print self.clientWinSize
-                            window[newBase]["Acks"] += 1
-                            if window[newBase]["Acks"] > 2:
-                                #print "Retransmit: %s" % window[newBase]["Seq"]
-                                window[newBase]["Acks"] = 0
-                                window[newBase]["Send"] = True
-                        sendBase = lastUnacked
-
-
-                except ChecksumError:
-                    # Drop bad ACK
+                if respInfo["CHK"] == 0:
+                    print "Corrupt packet"
                     continue
+                if CRPFlag.END_FLAG in respInfo["FLG"]:
+                    print "Closing"
+                    self.state = CRPState.CLOSE_WAIT
+                    self.close()
+                    return False
+                if CRPFlag.RST_FLAG in respInfo["FLG"]:
+                    print "Reset Connection"
+                    raise UnableToConnectException("Connection was not properly established. Please attempt to reconnect")
+                    return False
+                if CRPFlag.ACK_FLAG in respInfo["FLG"]:
+                    ackNum = respInfo["ACK"]
+                    self.clientWinSize = respInfo["WIN"]
+                    lastUnacked = ackNum
+                    if lastUnacked < sendBase:
+                        temp = 0
+                        for w in window:
+                            if w["Seq"] == lastUnacked:
+                                break
+                            else:
+                                temp += 1
+                        newBase = temp
+                    else:
+                        newBase = lastUnacked-sendBase
+
+                    self.__incrementSequence(newBase)
+                    if newBase >= len(unackPackets):
+                        # Nothing left to send
+                        #print "Nothing left to send here"
+                        break
+                    unackPackets = unackPackets[newBase:]
+
+                    if newBase < self.clientWinSize:
+                        #print self.clientWinSize
+                        window[newBase]["Acks"] += 1
+                        if window[newBase]["Acks"] > 2:
+                            #print "Retransmit: %s" % window[newBase]["Seq"]
+                            window[newBase]["Acks"] = 0
+                            window[newBase]["Send"] = True
+                    sendBase = lastUnacked
+
             except socket.timeout:
                 continue
 
@@ -525,6 +525,7 @@ class CRPSocket():
                     currSeq = headerInfo["SEQ"]
                     if currSeq < self.ackNum or headerInfo["CHK"] == 0:
                         # Already received this packet or corrupted. Ignore it
+                        print "Corrupt"
                         pass
                     elif currSeq > self.ackNum:
                         # Buffer packet and continue
@@ -552,6 +553,7 @@ class CRPSocket():
 
                 if CRPFlag.END_FLAG in headerInfo["FLG"]:
                     print "Closing"
+                    self.state = CRPState.CLOSE_WAIT
                     self.close()
                     return None
 
@@ -560,9 +562,6 @@ class CRPSocket():
                 timeoutsBeforeReturn -= 1
                 if timeoutsBeforeReturn == 0:
                     receiving = False
-            """except ChecksumError as cerr:
-                                                    # Drop corrupted packets
-                                                    continue"""
 
         print "Returning buffer"
         return dataBuffer
