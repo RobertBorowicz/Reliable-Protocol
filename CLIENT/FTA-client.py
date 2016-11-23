@@ -5,6 +5,7 @@ import threading
 import os
 import os.path
 import time
+import traceback
 
 
 class FTAClient():
@@ -150,6 +151,7 @@ class FTAClient():
             while self.receiving:
                 try:
                     data = self.CRP.recvData(2048)
+                    print len(data)
                     if data:
                         lastReceivedTime = time.time()
                         remainingBytes -= len(data)
@@ -165,8 +167,8 @@ class FTAClient():
                             self.CRP.close()
                             return
                 except:
-                    print 'Exception'
-                    continue
+                    traceback.print_exc()
+                    break
             if remainingBytes > 0:
                 print "Connection was terminated before receiving the full file"
                 f.close()
@@ -178,8 +180,8 @@ class FTAClient():
 
     def connect(self):
         try:
-            self.CRP.connect(self.address)
-            self.connected = True
+            if self.CRP.connect(self.address):
+                self.connected = True
         except:
             print "Unable to connect"
 
