@@ -4,6 +4,7 @@ import zlib
 from struct import *
 from random import randint
 import time
+import traceback
 
 class CRPState:
     CLOSED = 0
@@ -368,9 +369,8 @@ class CRPSocket():
                 if attempts == 0:
                     closed = True
 
-        if closed:
-            self.mainSocket.close()
-            self.state = CRPState.CLOSED
+        self.mainSocket.close()
+        self.state = CRPState.CLOSED
 
 
         print "CLOSED"
@@ -562,6 +562,9 @@ class CRPSocket():
                 timeoutsBeforeReturn -= 1
                 if timeoutsBeforeReturn == 0:
                     receiving = False
+
+            except Exception as e:
+                traceback.print_exc()
 
         #print "Returning buffer"
         return dataBuffer

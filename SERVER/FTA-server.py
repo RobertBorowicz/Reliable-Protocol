@@ -75,7 +75,7 @@ class FTAServer():
         print 'Receiving data'
         with open(fileName, 'wb') as file:
             while self.receiving:
-                data = conn.recvData(2048)
+                data = conn.recvData(4096)
                 if data:
                     lastReceivedTime = time.time()
                     remainingBytes -= len(data)

@@ -153,7 +153,6 @@ class FTAClient():
                     if data:
                         lastReceivedTime = time.time()
                         remainingBytes -= len(data)
-                        #print remainingBytes
                         f.write(data)
                         if remainingBytes == 0:
                             self.receiving = False
@@ -166,6 +165,7 @@ class FTAClient():
                             self.CRP.close()
                             return
                 except:
+                    print 'Exception'
                     continue
             if remainingBytes > 0:
                 print "Connection was terminated before receiving the full file"
