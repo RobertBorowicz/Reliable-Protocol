@@ -6,7 +6,10 @@ import os
 import os.path
 import time
 import traceback
-
+try:
+    import readline
+except ImportError:
+    print "Readline is not available on Windows Python 2.7.6 for some reason"
 
 class FTAClient():
 
@@ -37,6 +40,8 @@ class FTAClient():
 
                 if self.idle:
                     threading.Thread(target=self.getRequest, args=(commands[1],)).start()
+                else:
+                    print "Please wait until the current request has finished"
 
             elif command == 'post':
                 if len(commands) < 2:
@@ -49,16 +54,25 @@ class FTAClient():
 
                 if self.idle:
                     threading.Thread(target=self.post, args=(commands[1],)).start()
+                else:
+                    print "Please wait until the current request has finished"
 
             elif command == 'connect':
-                print "Attempting connection"
-                self.connect()
+                if not self.connected:
+                    print "Attempting connection"
+                    self.connect()
+                else:
+                    print "Already connected"
 
             elif command == 'window':
                 if len(commands) < 2:
-                    print 'Please provide a valid window'
+                    print 'Please provide a window value'
                     continue
-                windowLength = int(commands[1])
+                try:
+                    windowLength = int(commands[1])
+                except:
+                    print "Please provide a valid window"
+                    continue
                 if windowLength <= 0 or windowLength > 65535:
                     print 'Invalid window length. Must be in range [1, 65535]'
                     continue
@@ -98,15 +112,12 @@ class FTAClient():
         postHeader = "POST\n"
         postHeader += "%s\n" % file
         postHeader += "LENGTH:%s" % (os.path.getsize(file))
-        print postHeader
         
         if self.connected:
-            print postHeader
             print self.CRP.sendData(postHeader)
             while self.active:
                 response = self.CRP.recvData(2048)
                 if response:
-                    print response
                     if response[0:5] == "READY":
                         self.postRequestData(file)
                         break
@@ -119,36 +130,36 @@ class FTAClient():
         getHeader += file
 
         if self.connected:
-            print getHeader
-            print self.CRP.sendData(getHeader)
-            while self.active:
-                response = self.CRP.recvData(1024)
-                if response:
-                    print response
-                    if response[0:5] == "READY":
-                        responseLines = response.splitlines()
-                        length = int(responseLines[1][7:])
-                        self.getRequestData(file, length)
-                        break
-                    else:
-                        print response
-                        break
+            if self.CRP.sendData(getHeader):
+                while self.active:
+                    response = self.CRP.recvData(1024)
+                    if response:
+                        if response[0:5] == "READY":
+                            responseLines = response.splitlines()
+                            length = int(responseLines[1][7:])
+                            self.getRequestData(file, length)
+                            break
+                        else:
+                            print response
+                            break
 
     def postRequestData(self, filename):
         print "Ready to service post request"
         self.sending = True
         with open(filename, 'rb') as file:
+            self.idle = False
             while self.sending:
                 data = file.read()
                 if data:
-                    print "Sending data"
+                    print "Sending '%s' to the server" % filename
                     result = self.CRP.sendData(data)
                     if result:
-                        print "Successfully sent %s bytes to client" % os.path.getsize(filename)
+                        print "Successfully sent %s bytes of '%s' to client" % (os.path.getsize(filename), filename)
                     else:
                         print "Server cancelled and closed the connection before receiving the entire file"
                     self.sending = False
                     break
+        self.idle = True
 
 
     def getRequestData(self, file, length):

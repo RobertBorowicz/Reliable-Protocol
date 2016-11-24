@@ -2,8 +2,13 @@ import sys
 sys.path.insert(0, '../')
 from CRP import CRPSocket
 import threading
+import os
 import os.path
 import time
+try:
+    import readline
+except ImportError:
+    print "Readline is not available on Windows Python 2.7.6 for some reason"
 
 class Request:
     GET = 'GET'
@@ -152,8 +157,11 @@ class FTAServer():
                 """while self.sending:
                     pass"""
                 self.active = False
-                self.crpSock.close()
-                sys.exit(0)
+                if self.crpSock.state > 1:
+                    print "Closing all active connections..."
+                    self.crpSock.close()
+                print "Goodbye"
+                os._exit(0)
             elif command == 'help':
                 print '\nwindow W: set the client\'s receive window to W'
                 print 'terminate: disconnect from client and exit the application'
