@@ -154,15 +154,17 @@ class FTAServer():
                 self.active = False
                 self.crpSock.close()
                 sys.exit(0)
+            elif command == 'help':
+                print '\nwindow W: set the client\'s receive window to W'
+                print 'terminate: disconnect from client and exit the application'
             else:
-                print "Please enter a valid command. ('window x' or 'terminate')"
+                print "Please enter a valid command. Type 'help' for a list of commands"
 
     def startServer(self, port):
         self.crpSock = CRPSocket()
         self.crpSock.bind(('', port))
         threading.Thread(target=self.handleInput).start()
         try:
-            #while True:
             while self.active:
                 print "Waiting for connections"
                 self.crpSock.listen()

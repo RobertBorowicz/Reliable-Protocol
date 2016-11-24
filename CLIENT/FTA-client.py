@@ -34,6 +34,7 @@ class FTAClient():
                 if len(commands) < 2:
                     print 'Must provide a file name'
                     continue
+
                 if self.idle:
                     threading.Thread(target=self.getRequest, args=(commands[1],)).start()
 
@@ -43,17 +44,16 @@ class FTAClient():
                     continue
 
                 if not os.path.isfile(commands[1]):
-                    print "Invalid file name"
+                    print "Invalid file name provided"
                     continue
 
-                print 'Post request'
                 if self.idle:
-                    print 'Idle'
-                    print commands[1]
                     threading.Thread(target=self.post, args=(commands[1],)).start()
+
             elif command == 'connect':
                 print "Attempting connection"
                 self.connect()
+
             elif command == 'window':
                 if len(commands) < 2:
                     print 'Please provide a valid window'
@@ -63,15 +63,24 @@ class FTAClient():
                     print 'Invalid window length. Must be in range [1, 65535]'
                     continue
                 self.setWindow(windowLength)
+
             elif command == 'disconnect':
+                if self.sending:
+                    print "Client will disconnect after it has finished sending"
                 while self.sending:
                     pass
                 self.CRP.close()
                 self.active = False
                 sys.exit(0)
                 break
+            elif command == 'help':
+                print '\nconnect: connect to the remote server'
+                print 'get X: request a file, X, from the server'
+                print 'post X: send a file, X, to the server'
+                print 'window W: set the client\'s receive window to W'
+                print 'disconnect: disconnect from the server and exit the application'
             else:
-                print "Please enter a valid command. ('window x' or 'terminate')"
+                print "Please enter a valid command. Type 'help' for a list of commands"
 
     def handleCommand(self, command):
         if command[0] == 'get':
