@@ -6,6 +6,7 @@ import os
 import os.path
 import time
 import traceback
+import logging
 try:
     import readline
 except ImportError:
@@ -13,7 +14,7 @@ except ImportError:
 
 class FTAClient():
 
-    def __init__(self, addr):
+    def __init__(self, addr, log):
         self.CRP = CRPSocket()
         self.address = addr
         self.idle = True
@@ -22,6 +23,9 @@ class FTAClient():
         self.receiving = False
         self.sending = False
         self.active = True
+
+        self.log = logging.getLogger('server')
+        self.log.setLevel(log)
 
     def startClient(self):
         print "Client is ready to receive commands\nFor a list of commands, type 'help'"
@@ -53,13 +57,13 @@ class FTAClient():
                     continue
 
                 if self.idle:
-                    threading.Thread(target=self.post, args=(commands[1],)).start()
+                    threading.Thread(target=self.postRequest, args=(commands[1],)).start()
                 else:
                     print "Please wait until the current request has finished"
 
             elif command == 'connect':
                 if not self.connected:
-                    print "Attempting connection"
+                    print "Attempting connection..."
                     self.connect()
                 else:
                     print "Already connected"
@@ -83,6 +87,7 @@ class FTAClient():
                     print "Client will disconnect after it has finished sending"
                 while self.sending:
                     pass
+                print "Now closing the connection..."
                 self.CRP.close()
                 self.active = False
                 sys.exit(0)
@@ -96,6 +101,13 @@ class FTAClient():
             else:
                 print "Please enter a valid command. Type 'help' for a list of commands"
 
+    def checkForDisconnect(self):
+        while True:
+            if self.CRP.state <= 1:
+                print "Connection has been closed.\nGoodbye"
+                sys.exit(0)
+                break
+
     def handleCommand(self, command):
         if command[0] == 'get':
             self.getRequest(command[1])
@@ -107,34 +119,43 @@ class FTAClient():
             if len(self.commandQueue > 0) and self.idle:
                 self.handleCommand(self, commandQueue.pop(0))
 
-    def post(self, file):
+    def postRequest(self, file):
         print 'Servicing post request'
         postHeader = "POST\n"
         postHeader += "%s\n" % file
         postHeader += "LENGTH:%s" % (os.path.getsize(file))
+        self.log.debug("Post Request Header:\n%s" % postHeader)
         
         if self.connected:
-            print self.CRP.sendData(postHeader)
-            while self.active:
-                response = self.CRP.recvData(2048)
-                if response:
-                    if response[0:5] == "READY":
-                        self.postRequestData(file)
-                        break
-                    else:
-                        print response
-                        break
+            self.log.debug("Sending the POST header to the server")
+            post = self.CRP.sendData(postHeader)
+            if post:
+                while self.active:
+                    self.log.debug("Waiting for READY from server")
+                    response = self.CRP.recvData(2048)
+                    if response:
+                        if response[0:5] == "READY":
+                            self.log.debug("Received READY")
+                            self.postRequestData(file)
+                            break
+                        else:
+                            print response
+                            break
 
     def getRequest(self, file):
         getHeader = "GET\n"
         getHeader += file
+        self.log.debug("Get Request Header:\n%s" % getHeader)
 
         if self.connected:
+            self.log.debug("Sending the GET header to the server")
             if self.CRP.sendData(getHeader):
                 while self.active:
+                    self.log.debug("Waiting for READY from server")
                     response = self.CRP.recvData(1024)
                     if response:
                         if response[0:5] == "READY":
+                            self.log.debug("Received READY")
                             responseLines = response.splitlines()
                             length = int(responseLines[1][7:])
                             self.getRequestData(file, length)
@@ -151,7 +172,7 @@ class FTAClient():
             while self.sending:
                 data = file.read()
                 if data:
-                    print "Sending '%s' to the server" % filename
+                    print "Sending '%s' to the server..." % filename
                     result = self.CRP.sendData(data)
                     if result:
                         print "Successfully sent %s bytes of '%s' to client" % (os.path.getsize(filename), filename)
@@ -165,54 +186,52 @@ class FTAClient():
     def getRequestData(self, file, length):
         print "Ready to receive data"
         self.receiving = True
+        self.idle = False
         remainingBytes = length
         lastReceivedTime = time.time()
         with open(file, 'wb') as f:
             while self.receiving:
                 try:
                     data = self.CRP.recvData(2048)
-                    print len(data)
                     if data:
                         lastReceivedTime = time.time()
                         remainingBytes -= len(data)
+                        self.log.debug("Received a data chunk from the server. Remaining bytes to receive: %s" % remainingBytes)
                         f.write(data)
                         if remainingBytes == 0:
+                            print "Successfully received '%s' (%s bytes) from the server" % (file, length)
                             self.receiving = False
                             f.close()
                     else:
                         if time.time() - lastReceivedTime > 15:
-                            print "Connection timed out"
+                            print "Connection timed out. Closing the connection and removing partial files"
                             f.close()
                             os.remove(file)
                             self.CRP.close()
+                            os._exit(0)
                             return
                 except:
                     traceback.print_exc()
                     break
             if remainingBytes > 0:
-                print "Connection was terminated before receiving the full file"
+                print "Connection was terminated by the server before receiving the full file. You can now disconnect"
                 f.close()
                 os.remove(file)
-
-
-    def postRequest(self, file):
-        pass
+        self.idle = True
 
     def connect(self):
         try:
             if self.CRP.connect(self.address):
+                print "Now connected to the remote server"
                 self.connected = True
+                threading.Thread(target=self.checkForDisconnect).start()
+            else:
+                print "Failed to connect to the remote server. Please try again."
         except:
-            print "Unable to connect"
-
-    def initiateClose(self):
-        while True:
-            if self.idle:
-                self.CRP.close()
-                print 'Connection has been closed.\nGoodbye'
-                return
+            print "Failed to connect to the remote server. Please try again."
 
     def setWindow(self, winSize):
+        print "Setting window size to %s" % winSize
         self.CRP.updateWindowSize(winSize)
 
 """threading.Thread(target=echoInput).start()
@@ -238,19 +257,23 @@ except KeyboardInterrupt:
 if __name__ == "__main__":
     HOST = 'localhost'
     PORT = 5000
-    #log_level = logging.INFO
-    #logging.basicConfig(format='%(levelname)s-%(message)s', level=logging.INFO)
+    log_level = logging.INFO
+    logging.basicConfig(format='%(levelname)s-%(message)s', level=logging.INFO)
 
     try:
         HOST = sys.argv[1]
         try:
             PORT = int(sys.argv[2])
+            if len(sys.argv) > 3:
+                if sys.argv[3] == '-d':
+                    print 'Debug enabled'
+                    log_level = logging.DEBUG
         except:
             print 'Please provide a valid port number'
-            sys.exit(0)
+            os._exit(0)
         address = (HOST, PORT)
-        client = FTAClient(address)
+        client = FTAClient(address, log_level)
         client.startClient()
 
     except KeyboardInterrupt:
-        sys.exit(0)
+        os._exit(0)

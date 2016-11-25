@@ -5,6 +5,7 @@ import threading
 import os
 import os.path
 import time
+import logging
 try:
     import readline
 except ImportError:
@@ -17,38 +18,45 @@ class Request:
 
 class FTAServer():
 
-    def __init__(self):
+    def __init__(self, log):
         self.receive = True
         self.crpSock = None
         self.sending = False
         self.receiving = False
         self.active = True
 
+        self.log = logging.getLogger('server')
+        self.log.setLevel(log)
+
     def handleConnection(self, conn, addr):
-        print "Now servicing %s %s" % conn.clientAddr
+        print "Now servicing client: %s %s" % conn.clientAddr
         lastServiced = time.time()
         waiting = True
         while (waiting):
             try:
+                if self.crpSock.state <= 1:
+                    break
                 if time.time() - lastServiced > 30:
-                    print "Connection timed out. Closing connection..."
+                    print "Connection timed out. Force closing connection..."
                     conn.close()
                     break
                 request = conn.recvData(2048)
                 if request:
+                    self.log.debug("Received request from client:\n%s" % request)
                     requestLines = request.splitlines()
                     response, fileName, fileSize, reqType = self.handleRequest(requestLines)
                     print response
 
                     if response[:5] == "READY":
                         conn.sendData(response)
-                        print "All good"
                         if reqType == Request.GET:
+                            self.log.debug("Received GET request from client")
                             self.getRequest(conn, fileName)
                         elif reqType == Request.POST:
-                            print 'Posting'
+                            self.log.debug("Received POST request from client")
                             self.postRequest(conn, fileName, fileSize)
                     else:
+                        self.log.debug("Received an invalid request")
                         conn.sendData(response)
                         continue
                     lastServiced = time.time()
@@ -56,13 +64,13 @@ class FTAServer():
                 continue
 
     def getRequest(self, conn, fileName):
-        print "Ready to service get request"
+        print "Ready to service get request from client"
         self.sending = True
         with open(fileName, 'rb') as file:
             while self.sending:
                 data = file.read()
                 if data:
-                    print "Sending data"
+                    self.log.debug("Sending file '%s' to the client" % fileName)
                     result = conn.sendData(data)
                     if result:
                         print "Successfully sent %s bytes to client" % os.path.getsize(fileName)
@@ -170,7 +178,10 @@ class FTAServer():
 
     def startServer(self, port):
         self.crpSock = CRPSocket()
-        self.crpSock.bind(('', port))
+        try:
+            self.crpSock.bind(('', port))
+        except:
+            os._exit(0)
         threading.Thread(target=self.handleInput).start()
         try:
             while self.active:
@@ -182,20 +193,24 @@ class FTAServer():
             sys.exit()
 
     def setWindow(self, winSize):
+        print "Setting window size to %s" % winSize
         self.crpSock.updateWindowSize(winSize)
 
 if __name__ == "__main__":
     PORT = 5000
-    #log_level = logging.INFO
-    #logging.basicConfig(format='%(levelname)s-%(message)s', level=logging.INFO)
+    log_level = logging.INFO
+    logging.basicConfig(format='%(levelname)s-%(message)s', level=logging.INFO)
 
     try:
         try:
             PORT = int(sys.argv[1])
+            if len(sys.argv) > 2:
+                if sys.argv[2] == '-d':
+                    log_level = logging.DEBUG
         except:
             print "Please provide valid port"
-            sys.exit(0)
-        server = FTAServer()
+            os._exit(0)
+        server = FTAServer(log_level)
         server.startServer(PORT)
     except KeyboardInterrupt:
-        sys.exit(0)
+        os._exit(0)

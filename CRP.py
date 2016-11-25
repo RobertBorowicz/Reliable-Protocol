@@ -299,7 +299,6 @@ class CRPSocket():
             except socket.timeout:
                 attempts -= 1
 
-        print "Failed to connect to the remote server. Please try again."
         self.state = CRPState.CLOSED
         return False
 
