@@ -105,7 +105,8 @@ class FTAClient():
         while True:
             if self.CRP.state <= 1:
                 print "Connection has been closed.\nGoodbye"
-                sys.exit(0)
+                self.CRP.mainSocket.close()
+                os._exit(0)
                 break
 
     def handleCommand(self, command):
@@ -120,7 +121,6 @@ class FTAClient():
                 self.handleCommand(self, commandQueue.pop(0))
 
     def postRequest(self, file):
-        print 'Servicing post request'
         postHeader = "POST\n"
         postHeader += "%s\n" % file
         postHeader += "LENGTH:%s" % (os.path.getsize(file))
@@ -165,17 +165,16 @@ class FTAClient():
                             break
 
     def postRequestData(self, filename):
-        print "Ready to service post request"
         self.sending = True
         with open(filename, 'rb') as file:
             self.idle = False
             while self.sending:
                 data = file.read()
                 if data:
-                    print "Sending '%s' to the server..." % filename
+                    print "Sending '%s' to the server" % filename
                     result = self.CRP.sendData(data)
                     if result:
-                        print "Successfully sent %s bytes of '%s' to client" % (os.path.getsize(filename), filename)
+                        print "Successfully sent '%s' (%s bytes) to the server" % (filename, os.path.getsize(filename))
                     else:
                         print "Server cancelled and closed the connection before receiving the entire file"
                     self.sending = False
@@ -184,7 +183,7 @@ class FTAClient():
 
 
     def getRequestData(self, file, length):
-        print "Ready to receive data"
+        print "Ready to receive %s" % file
         self.receiving = True
         self.idle = False
         remainingBytes = length
@@ -211,12 +210,12 @@ class FTAClient():
                             os._exit(0)
                             return
                 except:
-                    traceback.print_exc()
+                    #traceback.print_exc()
                     break
             if remainingBytes > 0:
-                print "Connection was terminated by the server before receiving the full file. You can now disconnect"
                 f.close()
                 os.remove(file)
+                print "Connection was terminated by the server before receiving the full file."                
         self.idle = True
 
     def connect(self):

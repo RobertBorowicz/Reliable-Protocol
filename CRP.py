@@ -54,7 +54,7 @@ class CRPSocket():
     CRP_RECV_TIMEOUT = 0.5
     CRP_CON_TIMEOUT = 0.5
     CRP_PACKET_TIMEOUT = 0.175
-    CRP_END_TIMEOUT = 2
+    CRP_END_TIMEOUT = 1
     
     CRP_MAX_WINSIZE = 0xffff
 
@@ -354,10 +354,15 @@ class CRPSocket():
                                     self.state = CRPState.TIMEOUT
                                     closed = True
                                     break
+                                else:
+                                    endWaitAttempts -= 1
                             except socket.timeout:
                                 endWaitAttempts -= 1
 
                 elif (CRPFlag.END_FLAG in respFlags):
+                    if self.state == CRPState.TERMINATING:
+                        # Simultaneous close fast exit
+                        break
                     self.state = CRPState.TERMINATING
 
             except socket.timeout:
@@ -511,7 +516,6 @@ class CRPSocket():
                         del self.bufferedPackets[self.ackNum]
                         self.ackNum = (self.ackNum + 1) % self.CRP_MAX_ACK_NUM
                     else:
-                        'Corrected packets %s' % self.ackNum
                         break
 
                 #self.mainSocket.settimeout(1)

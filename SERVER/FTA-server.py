@@ -45,7 +45,6 @@ class FTAServer():
                     self.log.debug("Received request from client:\n%s" % request)
                     requestLines = request.splitlines()
                     response, fileName, fileSize, reqType = self.handleRequest(requestLines)
-                    print response
 
                     if response[:5] == "READY":
                         conn.sendData(response)
@@ -64,7 +63,7 @@ class FTAServer():
                 continue
 
     def getRequest(self, conn, fileName):
-        print "Ready to service get request from client"
+        print "Ready to send '%s' to the client" % fileName
         self.sending = True
         with open(fileName, 'rb') as file:
             while self.sending:
@@ -73,7 +72,7 @@ class FTAServer():
                     self.log.debug("Sending file '%s' to the client" % fileName)
                     result = conn.sendData(data)
                     if result:
-                        print "Successfully sent %s bytes to client" % os.path.getsize(fileName)
+                        print "Successfully sent '%s' (%s bytes) to the client" % (fileName, os.path.getsize(fileName))
                     else:
                         print "Client cancelled and closed the connection before receiving the entire file"
                     self.sending = False
@@ -84,21 +83,17 @@ class FTAServer():
         self.receiving = True
         remainingBytes = length
         lastReceivedTime = time.time()
-        buff = ''
-        print 'Receiving data'
+        print "Receiving '%s' from the client" % fileName
         with open(fileName, 'wb') as file:
             while self.receiving:
                 data = conn.recvData(4096)
                 if data:
                     lastReceivedTime = time.time()
                     remainingBytes -= len(data)
-                    buff += data
-                    #file.write(data)
-                    if remainingBytes < 10000:
-                        print remainingBytes
+                    file.write(data)
                     if remainingBytes == 0:
                         self.receiving = False
-                        file.write(buff)
+                        print "Successfully received '%s' (%s bytes) from the client" % (fileName, length)
                         file.close()
                 else:
                     if time.time() - lastReceivedTime > 30:
@@ -109,7 +104,6 @@ class FTAServer():
 
 
     def handleRequest(self, requestLines):
-        print "Handling request"
         request = requestLines[0]
         if request == Request.GET:
             fileName = requestLines[1].strip()
@@ -137,7 +131,6 @@ class FTAServer():
                 return response, fileName, fileSize, Request.POST
 
             except:
-                print "Invalid file length"
                 response += "ERROR\n"
                 response += "Invalid file length"
                 return response, None, -1, Request.POST
@@ -169,6 +162,7 @@ class FTAServer():
                     print "Closing all active connections..."
                     self.crpSock.close()
                 print "Goodbye"
+                self.crpSock.mainSocket.close()
                 os._exit(0)
             elif command == 'help':
                 print '\nwindow W: set the client\'s receive window to W'
@@ -185,7 +179,7 @@ class FTAServer():
         threading.Thread(target=self.handleInput).start()
         try:
             while self.active:
-                print "Waiting for connections"
+                print "Waiting for new connections"
                 self.crpSock.listen()
                 conn, addr = self.crpSock.accept()
                 self.handleConnection(conn, addr)
