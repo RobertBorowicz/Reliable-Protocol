@@ -29,7 +29,7 @@ class FTAServer():
         self.log.setLevel(log)
 
     def handleConnection(self, conn, addr):
-        print "Now servicing client: %s %s" % conn.clientAddr
+        print "Now servicing client: %s %s" % conn.clientAddr[:2]
         lastServiced = time.time()
         waiting = True
         while (waiting):
@@ -90,6 +90,7 @@ class FTAServer():
                 if data:
                     lastReceivedTime = time.time()
                     remainingBytes -= len(data)
+                    self.log.debug("Received a data chunk from the client. %s bytes remaining" % remainingBytes)
                     file.write(data)
                     if remainingBytes == 0:
                         self.receiving = False
@@ -171,7 +172,7 @@ class FTAServer():
                 print "Please enter a valid command. Type 'help' for a list of commands"
 
     def startServer(self, port):
-        self.crpSock = CRPSocket()
+        self.crpSock = CRPSocket(True)
         try:
             self.crpSock.bind(('', port))
         except:

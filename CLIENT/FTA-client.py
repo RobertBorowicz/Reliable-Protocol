@@ -14,8 +14,8 @@ except ImportError:
 
 class FTAClient():
 
-    def __init__(self, addr, log):
-        self.CRP = CRPSocket()
+    def __init__(self, addr, log, v6):
+        self.CRP = CRPSocket(v6)
         self.address = addr
         self.idle = True
         self.connected = False
@@ -141,6 +141,8 @@ class FTAClient():
                         else:
                             print response
                             break
+        else:
+            print "Not connected to the server"
 
     def getRequest(self, file):
         getHeader = "GET\n"
@@ -163,6 +165,8 @@ class FTAClient():
                         else:
                             print response
                             break
+        else:
+            print "Not connected to the server"
 
     def postRequestData(self, filename):
         self.sending = True
@@ -233,31 +237,12 @@ class FTAClient():
         print "Setting window size to %s" % winSize
         self.CRP.updateWindowSize(winSize)
 
-"""threading.Thread(target=echoInput).start()
-
-crpSock = CRPSocket()
-try:
-    #crpSock.connect(('172.17.0.2', 5000))
-    if(crpSock.connect(('172.17.0.2', 5000))):
-        with open("SRC/src.gif", "rb") as f:
-            while True:
-                data = f.read()
-                if data:
-                    crpSock.sendData(data)
-                else:
-                    break
-    else:
-        print "exit"
-        sys.exit()
-except KeyboardInterrupt:
-    sys.exit()"""
-
-
 if __name__ == "__main__":
     HOST = 'localhost'
     PORT = 5000
     log_level = logging.INFO
     logging.basicConfig(format='%(levelname)s-%(message)s', level=logging.INFO)
+    v6 = False
 
     try:
         HOST = sys.argv[1]
@@ -267,11 +252,27 @@ if __name__ == "__main__":
                 if sys.argv[3] == '-d':
                     print 'Debug enabled'
                     log_level = logging.DEBUG
+                elif sys.argv[3] == '-v6':
+                    print 'IPv6 mode enabled. Make sure the provided address is the server IPv6 address'
+                    v6 = True
+                else:
+                    print "Invalid flag provided"
+                    os._exit(0)
+                if len(sys.argv) > 4:
+                    if sys.argv[4] == '-d':
+                        print 'Debug enabled'
+                        log_level = logging.DEBUG
+                    elif sys.argv[4] == '-v6':
+                        print 'IPv6 mode enabled. Make sure the provided address is the server IPv6 address'
+                        v6 = True
+                    else:
+                        print "Invalid flag provided"
+                        os._exit(0)
         except:
             print 'Please provide a valid port number'
             os._exit(0)
         address = (HOST, PORT)
-        client = FTAClient(address, log_level)
+        client = FTAClient(address, log_level, v6)
         client.startClient()
 
     except KeyboardInterrupt:
