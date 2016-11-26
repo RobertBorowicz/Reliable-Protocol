@@ -377,7 +377,7 @@ class CRPSocket():
                     self.state = CRPState.CLOSED
                     #raise UnableToConnectException("Connection was not properly established. Please attempt to reconnect")
                     self.connect(self.clientAddr)
-                    #return False
+                    return False
                 if CRPFlag.ACK_FLAG in respInfo["FLG"]:
 
                     self.clientWinSize = respInfo["WIN"]

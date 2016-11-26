@@ -88,6 +88,8 @@ class FTAClient():
                 while self.sending:
                     pass
                 print "Now closing the connection..."
+                self.receiving = False
+                time.sleep(1)
                 self.CRP.close()
                 self.active = False
                 sys.exit(0)
@@ -103,7 +105,7 @@ class FTAClient():
 
     def checkForDisconnect(self):
         while True:
-            if self.CRP.state <= 1:
+            if self.CRP.state == 0:
                 print "Connection has been closed.\nGoodbye"
                 self.CRP.mainSocket.close()
                 os._exit(0)
@@ -219,7 +221,7 @@ class FTAClient():
             if remainingBytes > 0:
                 f.close()
                 os.remove(file)
-                print "Connection was terminated by the server before receiving the full file."                
+                print "Connection was terminated before receiving the full file."                
         self.idle = True
 
     def connect(self):
